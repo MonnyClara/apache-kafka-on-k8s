@@ -75,7 +75,8 @@ versions += [
   zkclient: "0.10",
   zookeeper: "3.4.10",
   jfreechart: "1.0.0",
-  mavenArtifact: "3.5.3"
+  mavenArtifact: "3.5.3",
+  jetcdcore: "0.0.1",
 ]
 
 libs += [
@@ -124,5 +125,6 @@ libs += [
   zkclient: "com.101tec:zkclient:$versions.zkclient",
   zookeeper: "org.apache.zookeeper:zookeeper:$versions.zookeeper",
   jfreechart: "jfreechart:jfreechart:$versions.jfreechart",
-  mavenArtifact: "org.apache.maven:maven-artifact:$versions.mavenArtifact"
+  mavenArtifact: "org.apache.maven:maven-artifact:$versions.mavenArtifact",
+  jetcdcore: "com.coreos:jetcd-core:$versions.jetcdcore"
 ]
