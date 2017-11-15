@@ -25,6 +25,7 @@ import kafka.common.KafkaException
 import kafka.controller.LeaderIsrAndControllerEpoch
 import kafka.log.LogConfig
 import kafka.metrics.KafkaMetricsGroup
+import kafka.metastore.KafkaMetastore
 import kafka.security.auth.SimpleAclAuthorizer.VersionedAcls
 import kafka.security.auth.{Acl, Resource, ResourceType}
 import kafka.server.ConfigType
@@ -50,7 +51,7 @@ import scala.collection.{Seq, mutable}
  * easier to quickly migrate away from `ZkUtils`. We should revisit this once the migration is completed and tests are
  * in place. We should also consider whether a monolithic [[kafka.zk.ZkData]] is the way to go.
  */
-class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean, time: Time) extends AutoCloseable with
+class KafkaZkClient(kafkaMetastore: List[KafkaMetastore], isSecure: Boolean, time: Time) extends AutoCloseable with
   Logging with KafkaMetricsGroup {
 
   override def metricName(name: String, metricTags: scala.collection.Map[String, String]): MetricName = {
@@ -1167,7 +1168,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @throws KeeperException if an error is returned by ZooKeeper
    */
   def registerZNodeChangeHandlerAndCheckExistence(zNodeChangeHandler: ZNodeChangeHandler): Boolean = {
-    zooKeeperClient.registerZNodeChangeHandler(zNodeChangeHandler)
+    kafkaMetastore.foreach(_.registerZNodeChangeHandler(zNodeChangeHandler))
     val existsResponse = retryRequestUntilConnected(ExistsRequest(zNodeChangeHandler.path))
     existsResponse.resultCode match {
       case Code.OK => true
@@ -1181,7 +1182,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @param zNodeChangeHandler
    */
   def registerZNodeChangeHandler(zNodeChangeHandler: ZNodeChangeHandler): Unit = {
-    zooKeeperClient.registerZNodeChangeHandler(zNodeChangeHandler)
+    kafkaMetastore.foreach(_.registerZNodeChangeHandler(zNodeChangeHandler))
   }
 
   /**
@@ -1189,7 +1190,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @param path
    */
   def unregisterZNodeChangeHandler(path: String): Unit = {
-    zooKeeperClient.unregisterZNodeChangeHandler(path)
+    kafkaMetastore.foreach(_.unregisterZNodeChangeHandler(path))
   }
 
   /**
@@ -1197,7 +1198,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @param zNodeChildChangeHandler
    */
   def registerZNodeChildChangeHandler(zNodeChildChangeHandler: ZNodeChildChangeHandler): Unit = {
-    zooKeeperClient.registerZNodeChildChangeHandler(zNodeChildChangeHandler)
+    kafkaMetastore.foreach(_.registerZNodeChildChangeHandler(zNodeChildChangeHandler))
   }
 
   /**
@@ -1205,7 +1206,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @param path
    */
   def unregisterZNodeChildChangeHandler(path: String): Unit = {
-    zooKeeperClient.unregisterZNodeChildChangeHandler(path)
+    kafkaMetastore.foreach(_.unregisterZNodeChildChangeHandler(path))
   }
 
   /**
@@ -1213,7 +1214,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @param stateChangeHandler
    */
   def registerStateChangeHandler(stateChangeHandler: StateChangeHandler): Unit = {
-    zooKeeperClient.registerStateChangeHandler(stateChangeHandler)
+    kafkaMetastore.foreach(_.registerStateChangeHandler(stateChangeHandler))
   }
 
   /**
@@ -1221,7 +1222,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    * @param name
    */
   def unregisterStateChangeHandler(name: String): Unit = {
-    zooKeeperClient.unregisterStateChangeHandler(name)
+    kafkaMetastore.foreach(_.unregisterStateChangeHandler(name))
   }
 
   /**
@@ -1229,7 +1230,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
    */
   def close(): Unit = {
     removeMetric("ZooKeeperRequestLatencyMs")
-    zooKeeperClient.close()
+    kafkaMetastore.foreach(_.close())
   }
 
   /**
@@ -1436,7 +1437,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
     val remainingRequests = ArrayBuffer(requests: _*)
     val responses = new ArrayBuffer[Req#Response]
     while (remainingRequests.nonEmpty) {
-      val batchResponses = zooKeeperClient.handleRequests(remainingRequests)
+      val batchResponses = kafkaMetastore.flatMap(_.handleRequests(remainingRequests))
 
       batchResponses.foreach(response => latencyMetric.update(response.metadata.responseTimeMs))
 
@@ -1453,7 +1454,7 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
         }
 
         if (remainingRequests.nonEmpty)
-          zooKeeperClient.waitUntilConnected()
+          kafkaMetastore.foreach(_.waitUntilConnected())
       } else {
         remainingRequests.clear()
         responses ++= batchResponses
@@ -1488,9 +1489,10 @@ class KafkaZkClient private (zooKeeperClient: ZooKeeperClient, isSecure: Boolean
       val getDataRequest = GetDataRequest(path)
       val getDataResponse = retryRequestUntilConnected(getDataRequest)
       getDataResponse.resultCode match {
-        case Code.OK if getDataResponse.stat.getEphemeralOwner != zooKeeperClient.sessionId =>
+        case Code.OK if getDataResponse.stat.getEphemeralOwner != kafkaMetastore.find(_.isInstanceOf[ZooKeeperClient]).get.sessionId =>
           error(s"Error while creating ephemeral at $path, node already exists and owner " +
-            s"'${getDataResponse.stat.getEphemeralOwner}' does not match current session '${zooKeeperClient.sessionId}'")
+            s"'${getDataResponse.stat.getEphemeralOwner}' " +
+            s"does not match current session '${kafkaMetastore.find(_.isInstanceOf[ZooKeeperClient]).get.sessionId}'")
           Code.NODEEXISTS
         case code@ Code.OK => code
         case Code.NONODE =>
