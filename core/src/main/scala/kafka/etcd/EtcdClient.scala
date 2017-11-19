@@ -19,7 +19,6 @@ package kafka.etcd
 import java.util.concurrent.CompletableFuture
 
 import com.coreos.jetcd.Client
-import com.coreos.jetcd.data.ByteSequence
 import com.coreos.jetcd.exception.{ErrorCode, EtcdException}
 import com.coreos.jetcd.options.GetOption
 import com.coreos.jetcd.watch.WatchEvent
@@ -32,27 +31,58 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success, Try}
+import scala.collection.JavaConverters.asScalaBufferConverter
 
-class EtcdClient
-  extends KafkaMetastore
-  with Watching with Logging {
+class EtcdClient extends KafkaMetastore with Logging {
 
-  implicit private val client: Client = Client.builder.endpoints("http://127.0.0.1:2379").build()
+  import Implicits._
 
+  private val client: Client = Client.builder.endpoints("http://127.0.0.1:2379").build()
+
+
+  // Event handlers to handler events received from ETCD
   private val createHandlers = new ChangeHandlers
   private val updateHandlers = new ChangeHandlers
   private val deleteHandlers = new ChangeHandlers
+  private val childHandlers = new ChangeHandlers
 
 
+  // Subscribe to etcd events
+  private val etcdListener = EtcdListener(client) {
+    event: WatchEvent =>
+      val eventType = event.getEventType
+      val eventData = Option(event.getKeyValue)
+      val key: Option[String] = eventData.map(_.getKey)
+      val value: Option[String] = eventData.map(_.getValue)
 
-  implicit def bytes2ByteSequence(b: Array[Byte]): ByteSequence = ByteSequence.fromBytes(b)
-  implicit def byteSequence2StringUtf8(bs: ByteSequence): String = bs.toStringUtf8
-  implicit def byteSequence2Bytes(bs: ByteSequence): Array[Byte] = bs.getBytes
+      info(s"Received change notification: '$eventType' : '$key' -> '$value'")
+
+      eventData.foreach {
+        kv =>
+          eventType match {
+            case WatchEvent.EventType.PUT if kv.getVersion == 1L =>
+              createHandlers.triggerOn(key.get)
+              parentOf(key.get).foreach(childHandlers.triggerOn)
+
+            case WatchEvent.EventType.PUT =>
+              updateHandlers.triggerOn(key.get)
+
+            case WatchEvent.EventType.DELETE =>
+              deleteHandlers.triggerOn(key.get)
+              parentOf(key.get).foreach(childHandlers.triggerOn)
+
+            case _ =>
+              error(s"Received unrecognized ETCD event type received for '$key'!")
+              throw new Exception(s"Received unrecognized ETCD event type for '$key'!")
+          }
+
+      }
+
+  }
 
 
 
   override def registerZNodeChangeHandler(zNodeChangeHandler: ZNodeChangeHandler): Unit = {
-
     registerChangeHandler(zNodeChangeHandler.path,
       zNodeChangeHandler.handleCreation,
       zNodeChangeHandler.handleDataChange,
@@ -62,19 +92,23 @@ class EtcdClient
   }
 
   override def unregisterZNodeChangeHandler(path: String): Unit = {
-    unwatch(path)
-
     createHandlers.unregisterChangeHandler(path)
     updateHandlers.unregisterChangeHandler(path)
     deleteHandlers.unregisterChangeHandler(path)
   }
 
   override def registerZNodeChildChangeHandler(zNodeChildChangeHandler: ZNodeChildChangeHandler): Unit = {
-    watchChildren(zNodeChildChangeHandler.path)
+    val key = zNodeChildChangeHandler.path
+
+    info(s"Register change handler for children of '$key'")
+
+    childHandlers.registerChangeHandler(key, zNodeChildChangeHandler.handleChildChange)
   }
 
   override def unregisterZNodeChildChangeHandler(path: String): Unit = {
-    unwatchChildren(path)
+    info(s"Register change handler for children of '$path'")
+
+    childHandlers.unregisterChangeHandler(path)
   }
 
   override def registerStateChangeHandler(stateChangeHandler: StateChangeHandler): Unit = {
@@ -119,6 +153,32 @@ class EtcdClient
         }
         GetDataResponse(respStatus, key, ctx, data.orNull, null).asInstanceOf[Req#Response]
 
+      case GetChildrenRequest(path, ctx) =>
+        val parent = if (path.endsWith("/")) path else s"$path/"
+
+        val asyncResponse = client.getKVClient.get(
+          parent,
+          GetOption.newBuilder()
+              .withPrefix(parent)
+              .withKeysOnly(true)
+            .build()
+        )
+        val (respStatus, children) = handleAsyncRequestResponse(asyncResponse) { response =>
+          val keys: Set[String] = response.getKvs.asScala.map(_.getKey.toStringUtf8).map {
+            k =>
+              val startIdx = parent.length
+
+              k.indexOf('/', startIdx) match {
+                case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
+                case _ => k.substring(startIdx)
+              }
+          }.toSet
+
+          (KeeperException.Code.OK, Some(keys))
+        }
+
+        GetChildrenResponse(respStatus, path, ctx, children.get.toSeq, null).asInstanceOf[Req#Response]
+
       case SetDataRequest(key, data, _, ctx) =>
         val asyncResponse = client.getKVClient.put(key, data)
 
@@ -151,59 +211,19 @@ class EtcdClient
 
   override def close(): Unit = {
     // Close all watchers
-    unwatchAll()
+    etcdListener.close()
 
     // Close etcd client
     client.close()
   }
 
-
-
-
-  private def watchChildren(key: ByteSequence) = {
-    info(s"Register change handler for children of '$key'")
-
-    // TODO: implement me
-  }
-
-  private def unwatchChildren(key: ByteSequence) = {
-    info(s"Stop watcher for children of '$key'")
-
-    // TODO: implement me
-  }
-
-
   private def registerChangeHandler(key: String,
                                     onCreate: ChangeHandlers#Handler,
                                     onValueChange: ChangeHandlers#Handler,
                                     onDelete: ChangeHandlers#Handler): Unit = {
-
-
     createHandlers.registerChangeHandler(key, onCreate)
     updateHandlers.registerChangeHandler(key, onValueChange)
     deleteHandlers.registerChangeHandler(key, onDelete)
-
-    watch(key) {
-      event: WatchEvent =>
-          val eventType = event.getEventType
-          val eventData = Option(event.getKeyValue)
-          val key: Option[String] = eventData.map(_.getKey)
-          val value: Option[String] = eventData.map(_.getValue)
-
-          info(s"Received change notification: '$eventType' : '$key' -> '$value'")
-
-          eventData.foreach {
-            kv => eventType match {
-              case WatchEvent.EventType.PUT if kv.getVersion == 1L => createHandlers.triggerOn(key.get)
-              case WatchEvent.EventType.PUT => updateHandlers.triggerOn(key.get)
-              case WatchEvent.EventType.DELETE => deleteHandlers.triggerOn(key.get)
-              case _ =>
-                error(s"Received unrecognized ETCD event type received for '$key'!")
-                throw new Exception(s"Received unrecognized ETCD event type for '$key'!")
-            }
-
-          }
-    }
   }
 
 
@@ -215,9 +235,19 @@ class EtcdClient
       case Success(response) => handleResponse(response)
       case Failure(ex: EtcdException) if ex.getErrorCode == ErrorCode.UNAVAILABLE  =>
         (KeeperException.Code.CONNECTIONLOSS, None)
+      case Failure(ex: EtcdException) if ex.getErrorCode == ErrorCode.INVALID_ARGUMENT  =>
+        (KeeperException.Code.BADARGUMENTS, None)
       case _ =>
         (KeeperException.Code.SYSTEMERROR, None)
     }
 
+  }
+
+  private def parentOf(key: String): Option[String] = {
+    Option(key) match {
+      case Some(k) if !k.isEmpty =>
+        Some(k.substring(0, k.lastIndexOf('/')))
+      case _ => None
+    }
   }
 }
