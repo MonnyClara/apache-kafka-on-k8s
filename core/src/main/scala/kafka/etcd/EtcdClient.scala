@@ -33,12 +33,14 @@ import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success, Try}
 import scala.collection.JavaConverters.asScalaBufferConverter
 
-class EtcdClient extends KafkaMetastore with Logging {
+class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends KafkaMetastore with Logging {
 
   import Implicits._
 
-  private val client: Client = Client.builder.endpoints("http://127.0.0.1:2379").build()
+  private val connectionStringWithoutChRoot = connectionString.substring(0, connectionString.indexOf("/"))
+  private val root = connectionString.substring(connectionString.indexOf("/"))
 
+  private val client: Client = Client.builder.endpoints(connectionStringWithoutChRoot).build()
 
   // Event handlers to handler events received from ETCD
   private val createHandlers = new ChangeHandlers
@@ -127,8 +129,8 @@ class EtcdClient extends KafkaMetastore with Logging {
     info(s"Hanlde request: $request")
 
     request match {
-      case ExistsRequest(key, ctx) =>
-        val asyncResponse = client.getKVClient.get(key, GetOption.newBuilder().withCountOnly(true).build())
+      case ExistsRequest(path, ctx) =>
+        val asyncResponse = client.getKVClient.get(EtcdClient.absolutePath(root, path), GetOption.newBuilder().withCountOnly(true).build())
 
         val (respStatus, _) = handleAsyncRequestResponse(asyncResponse) { response =>
           response.getCount match {
@@ -137,10 +139,10 @@ class EtcdClient extends KafkaMetastore with Logging {
             case _ => (KeeperException.Code.SYSTEMERROR, None)
           }
         }
-        ExistsResponse(respStatus, key, ctx, null).asInstanceOf[Req#Response]
+        ExistsResponse(respStatus, path, ctx, null).asInstanceOf[Req#Response]
 
-      case GetDataRequest(key, ctx) =>
-        val asyncResponse = client.getKVClient.get(key)
+      case GetDataRequest(path, ctx) =>
+        val asyncResponse = client.getKVClient.get(EtcdClient.absolutePath(root, path))
 
         val (respStatus, data) = handleAsyncRequestResponse(asyncResponse) { response =>
           response.getCount match {
@@ -151,22 +153,22 @@ class EtcdClient extends KafkaMetastore with Logging {
             case _ => (KeeperException.Code.SYSTEMERROR, None)
           }
         }
-        GetDataResponse(respStatus, key, ctx, data.orNull, null).asInstanceOf[Req#Response]
+        GetDataResponse(respStatus, path, ctx, data.orNull, null).asInstanceOf[Req#Response]
 
       case GetChildrenRequest(path, ctx) =>
         val parent = if (path.endsWith("/")) path else s"$path/"
 
         val asyncResponse = client.getKVClient.get(
-          parent,
+          EtcdClient.absolutePath(root, parent),
           GetOption.newBuilder()
-              .withPrefix(parent)
+              .withPrefix(EtcdClient.absolutePath(root, parent))
               .withKeysOnly(true)
             .build()
         )
         val (respStatus, children) = handleAsyncRequestResponse(asyncResponse) { response =>
           val keys: Set[String] = response.getKvs.asScala.map(_.getKey.toStringUtf8).map {
             k =>
-              val startIdx = parent.length
+              val startIdx = EtcdClient.absolutePath(root, parent).length
 
               k.indexOf('/', startIdx) match {
                 case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
@@ -181,17 +183,17 @@ class EtcdClient extends KafkaMetastore with Logging {
 
       case CreateRequest(path, data, acl, createMode, ctx) =>
         createMode match {
-          case CreateMode.EPHEMERAL => createWithLease(path, data, ctx)
-          case CreateMode.PERSISTENT => create(path, data, ctx)
+          case CreateMode.EPHEMERAL => createWithLease(EtcdClient.absolutePath(root, path), data, ctx)
+          case CreateMode.PERSISTENT => create(EtcdClient.absolutePath(root, path), data, ctx)
           case CreateMode.PERSISTENT_SEQUENTIAL => ???
           case _ => ???
         }
 
-      case SetDataRequest(key, data, _, ctx) =>
-        val asyncResponse = client.getKVClient.put(key, data)
+      case SetDataRequest(path, data, _, ctx) =>
+        val asyncResponse = client.getKVClient.put(EtcdClient.absolutePath(root, path), data)
 
         val (respStatus, _) = handleAsyncRequestResponse(asyncResponse){ _ => (KeeperException.Code.OK, None) }
-        SetDataResponse(respStatus, key, ctx, null).asInstanceOf[Req#Response]
+        SetDataResponse(respStatus, path, ctx, null).asInstanceOf[Req#Response]
 
       case DeleteRequest(path, version, ctx) => ???
       case GetAclRequest(path, ctx) => ???
@@ -308,4 +310,8 @@ class EtcdClient extends KafkaMetastore with Logging {
     CreateResponse(createStatus, path, ctx, "").asInstanceOf[Req#Response]
   }
 
+}
+
+private[etcd] object EtcdClient {
+  def absolutePath(root: String, path: String) = s"$root$path"
 }
