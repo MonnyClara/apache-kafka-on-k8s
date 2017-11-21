@@ -20,12 +20,12 @@ import java.util.concurrent.CompletableFuture
 
 import com.coreos.jetcd.Client
 import com.coreos.jetcd.exception.{ErrorCode, EtcdException}
-import com.coreos.jetcd.options.GetOption
+import com.coreos.jetcd.options.{GetOption, PutOption}
 import com.coreos.jetcd.watch.WatchEvent
 import kafka.metastore.KafkaMetastore
 import kafka.utils.Logging
 import kafka.zookeeper._
-import org.apache.zookeeper.KeeperException
+import org.apache.zookeeper.{CreateMode, KeeperException}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
@@ -179,18 +179,26 @@ class EtcdClient extends KafkaMetastore with Logging {
 
         GetChildrenResponse(respStatus, path, ctx, children.get.toSeq, null).asInstanceOf[Req#Response]
 
+      case CreateRequest(path, data, acl, createMode, ctx) =>
+        createMode match {
+          case CreateMode.EPHEMERAL => createWithLease(path, data, ctx)
+          case CreateMode.PERSISTENT => create(path, data, ctx)
+          case CreateMode.PERSISTENT_SEQUENTIAL => ???
+          case _ => ???
+        }
+
       case SetDataRequest(key, data, _, ctx) =>
         val asyncResponse = client.getKVClient.put(key, data)
 
         val (respStatus, _) = handleAsyncRequestResponse(asyncResponse){ _ => (KeeperException.Code.OK, None) }
         SetDataResponse(respStatus, key, ctx, null).asInstanceOf[Req#Response]
 
-      case _ =>
-        null.asInstanceOf[Req#Response]
+      case DeleteRequest(path, version, ctx) => ???
+      case GetAclRequest(path, ctx) => ???
+      case SetAclRequest(path, acl, version, ctx) => ???
     }
-
-
   }
+
 
   override def handleRequests[Req <: AsyncRequest](requests: Seq[Req]): Seq[Req#Response] = {
     info(s"Handle requests: $requests")
@@ -250,4 +258,54 @@ class EtcdClient extends KafkaMetastore with Logging {
       case _ => None
     }
   }
+
+  private def createWithLease[Req <: AsyncRequest](path: String, data: Array[Byte], ctx: Option[Any]):Req#Response = {
+    // Grant lease
+    val leaseAsyncResp = client.getLeaseClient.grant(8L)
+    val (respStatus, Some(leaseId)) = handleAsyncRequestResponse(leaseAsyncResp) {
+      r => (KeeperException.Code.OK, Some(r.getID))
+    }
+
+    if (respStatus != KeeperException.Code.OK)
+      CreateResponse(respStatus, path, ctx, "").asInstanceOf[Req#Response]
+
+    // Create
+    val createResponse = create(path, data, ctx,
+      PutOption.newBuilder
+        .withLeaseId(leaseId)
+      .build
+    )
+
+    if (createResponse.resultCode != KeeperException.Code.OK)
+      createResponse
+
+    // Lease keep alive
+    val (status, _) = Try(client.getLeaseClient.keepAlive(leaseId)) match {
+      case Success(_) => (KeeperException.Code.OK, None)
+      case Failure(ex: EtcdException) if ex.getErrorCode == ErrorCode.INVALID_ARGUMENT =>
+        (KeeperException.Code.BADARGUMENTS, None)
+      case _ =>
+        (KeeperException.Code.SYSTEMERROR, None)
+    }
+
+
+    CreateResponse(status, path, ctx, "").asInstanceOf[Req#Response]
+  }
+
+  private def create[Req <: AsyncRequest](
+                                           path: String,
+                                           data: Array[Byte],
+                                           ctx: Option[Any],
+                                           option: PutOption = PutOption.DEFAULT):Req#Response = {
+    val createAsyncResp = client.getKVClient.put(
+      path,
+      data,
+      option
+    )
+
+    val (createStatus, _) = handleAsyncRequestResponse(createAsyncResp) { _ => (KeeperException.Code.OK, None) }
+
+    CreateResponse(createStatus, path, ctx, "").asInstanceOf[Req#Response]
+  }
+
 }
