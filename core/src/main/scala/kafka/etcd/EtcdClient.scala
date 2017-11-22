@@ -16,22 +16,20 @@
 */
 package kafka.etcd
 
-import java.util.concurrent.CompletableFuture
-
 import com.coreos.jetcd.Client
-import com.coreos.jetcd.exception.{ErrorCode, EtcdException}
+import com.coreos.jetcd.kv.GetResponse
 import com.coreos.jetcd.options.{GetOption, PutOption}
 import com.coreos.jetcd.watch.WatchEvent
 import kafka.metastore.KafkaMetastore
 import kafka.utils.Logging
 import kafka.zookeeper._
-import org.apache.zookeeper.{CreateMode, KeeperException}
+import org.apache.zookeeper.CreateMode
 
+import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
-import scala.util.{Failure, Success, Try}
-import scala.collection.JavaConverters.asScalaBufferConverter
+import scala.util.Try
 
 class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends KafkaMetastore with Logging {
 
@@ -83,7 +81,6 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
   }
 
 
-
   override def registerZNodeChangeHandler(zNodeChangeHandler: ZNodeChangeHandler): Unit = {
     registerChangeHandler(zNodeChangeHandler.path,
       zNodeChangeHandler.handleCreation,
@@ -125,75 +122,73 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     // TODO: implement me
   }
 
+
   override def handleRequest[Req <: AsyncRequest](request: Req): Req#Response = {
     info(s"Hanlde request: $request")
 
     request match {
       case ExistsRequest(path, ctx) =>
-        val asyncResponse = client.getKVClient.get(EtcdClient.absolutePath(root, path), GetOption.newBuilder().withCountOnly(true).build())
+        val response: Try[Boolean] = tryExists(EtcdClient.absolutePath(root, path))
 
-        val (respStatus, _) = handleAsyncRequestResponse(asyncResponse) { response =>
-          response.getCount match {
-            case 0 => (KeeperException.Code.NONODE, None)
-            case 1 => (KeeperException.Code.OK, None)
-            case _ => (KeeperException.Code.SYSTEMERROR, None)
-          }
-        }
-        ExistsResponse(respStatus, path, ctx, null).asInstanceOf[Req#Response]
+        val zkResult = new ZkExistsResponse(response)
+        ExistsResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
 
       case GetDataRequest(path, ctx) =>
-        val asyncResponse = client.getKVClient.get(EtcdClient.absolutePath(root, path))
-
-        val (respStatus, data) = handleAsyncRequestResponse(asyncResponse) { response =>
-          response.getCount match {
-            case 0 => (KeeperException.Code.NONODE, None)
-            case 1 =>
-              val v: Option[Array[Byte]] = Some(response.getKvs.get(0).getValue)
-              (KeeperException.Code.OK, v)
-            case _ => (KeeperException.Code.SYSTEMERROR, None)
-          }
+        val response: Try[Option[Array[Byte]]] = tryGetData(EtcdClient.absolutePath(root, path)) {
+          response =>
+            if (exists(response)) {
+              Some(response.getKvs.get(0).getValue)
+            }
+            else {
+              None
+            }
         }
-        GetDataResponse(respStatus, path, ctx, data.orNull, null).asInstanceOf[Req#Response]
+
+        val zkResult = new ZkGetDataResponse(response)
+        GetDataResponse(zkResult.resultCode, path, ctx, zkResult.data.orNull, null).asInstanceOf[Req#Response]
 
       case GetChildrenRequest(path, ctx) =>
         val parent = if (path.endsWith("/")) path else s"$path/"
 
-        val asyncResponse = client.getKVClient.get(
-          EtcdClient.absolutePath(root, parent),
-          GetOption.newBuilder()
+        val response: Try[Set[String]] =
+          tryGetData(
+            EtcdClient.absolutePath(root, parent),
+            GetOption.newBuilder()
               .withPrefix(EtcdClient.absolutePath(root, parent))
               .withKeysOnly(true)
-            .build()
-        )
-        val (respStatus, children) = handleAsyncRequestResponse(asyncResponse) { response =>
-          val keys: Set[String] = response.getKvs.asScala.map(_.getKey.toStringUtf8).map {
-            k =>
-              val startIdx = EtcdClient.absolutePath(root, parent).length
+              .build()
+          ) {
+            response =>
+              val keys: Set[String] = response.getKvs.asScala.map(_.getKey.toStringUtf8).map {
+                k =>
+                  val startIdx = EtcdClient.absolutePath(root, parent).length
 
-              k.indexOf('/', startIdx) match {
-                case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
-                case _ => k.substring(startIdx)
-              }
-          }.toSet
+                  k.indexOf('/', startIdx) match {
+                    case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
+                    case _ => k.substring(startIdx)
+                  }
+              }.toSet
 
-          (KeeperException.Code.OK, Some(keys))
-        }
+              keys
+          }
 
-        GetChildrenResponse(respStatus, path, ctx, children.get.toSeq, null).asInstanceOf[Req#Response]
+        val zkResult = new ZkGetChildrenResponse(response)
 
-      case CreateRequest(path, data, acl, createMode, ctx) =>
+        GetChildrenResponse(zkResult.resultCode, path, ctx, zkResult.childrenKeys.toSeq, null).asInstanceOf[Req#Response]
+
+      case CreateRequest(path, data, _, createMode, ctx) =>
         createMode match {
-          case CreateMode.EPHEMERAL => createWithLease(EtcdClient.absolutePath(root, path), data, ctx)
-          case CreateMode.PERSISTENT => create(EtcdClient.absolutePath(root, path), data, ctx)
+          case CreateMode.EPHEMERAL => createWithLease(path, data, ctx)
+          case CreateMode.PERSISTENT => create(path, data, ctx)
           case CreateMode.PERSISTENT_SEQUENTIAL => ???
           case _ => ???
         }
 
       case SetDataRequest(path, data, _, ctx) =>
-        val asyncResponse = client.getKVClient.put(EtcdClient.absolutePath(root, path), data)
+        val response = tryCreate(EtcdClient.absolutePath(root, path), data, ctx)
+        val zkResult = new ZkSetDataResponse(response)
 
-        val (respStatus, _) = handleAsyncRequestResponse(asyncResponse){ _ => (KeeperException.Code.OK, None) }
-        SetDataResponse(respStatus, path, ctx, null).asInstanceOf[Req#Response]
+        SetDataResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
 
       case DeleteRequest(path, version, ctx) => ???
       case GetAclRequest(path, ctx) => ???
@@ -236,23 +231,6 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     deleteHandlers.registerChangeHandler(key, onDelete)
   }
 
-
-  private def handleAsyncRequestResponse[R, U](
-                    asyncResponse: CompletableFuture[R])
-                    (handleResponse: R =>(KeeperException.Code, Option[U])): (KeeperException.Code, Option[U])  = {
-
-    Try(asyncResponse.get) match {
-      case Success(response) => handleResponse(response)
-      case Failure(ex: EtcdException) if ex.getErrorCode == ErrorCode.UNAVAILABLE  =>
-        (KeeperException.Code.CONNECTIONLOSS, None)
-      case Failure(ex: EtcdException) if ex.getErrorCode == ErrorCode.INVALID_ARGUMENT  =>
-        (KeeperException.Code.BADARGUMENTS, None)
-      case _ =>
-        (KeeperException.Code.SYSTEMERROR, None)
-    }
-
-  }
-
   private def parentOf(key: String): Option[String] = {
     Option(key) match {
       case Some(k) if !k.isEmpty =>
@@ -261,55 +239,91 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     }
   }
 
-  private def createWithLease[Req <: AsyncRequest](path: String, data: Array[Byte], ctx: Option[Any]):Req#Response = {
-    // Grant lease
-    val leaseAsyncResp = client.getLeaseClient.grant(8L)
-    val (respStatus, Some(leaseId)) = handleAsyncRequestResponse(leaseAsyncResp) {
-      r => (KeeperException.Code.OK, Some(r.getID))
-    }
+  private def tryExists(key: String): Try[Boolean] = {
+    tryGetData(key,
+      GetOption
+        .newBuilder()
+        .withCountOnly(true)
+        .build()
+    )(exists)
+  }
 
-    if (respStatus != KeeperException.Code.OK)
-      CreateResponse(respStatus, path, ctx, "").asInstanceOf[Req#Response]
+
+  private def exists(response: GetResponse): Boolean = {
+    response.getCount match {
+      case 0 => false
+      case 1 => true
+      case _ => throw new Error
+    }
+  }
+
+  private def tryGetData[U](
+                             key: String,
+                             option: GetOption = GetOption.DEFAULT)
+                           (extractResult: GetResponse => U): Try[U] = Try {
+    val asyncResponse = client.getKVClient.get(key, option)
+
+    asyncResponse.get
+  }.map(extractResult(_))
+
+
+  private def tryGrantLease(ttl: Long): Try[Long] = Try {
+    val leaseAsyncResp = client.getLeaseClient.grant(ttl)
+    leaseAsyncResp.get.getID
+  }
+
+  private def tryKeepLeaseAlive(leaseId: Long): Try[Any] = Try {
+    client.getLeaseClient.keepAlive(leaseId)
+  }
+
+  private def tryCreateWithLease[Req <: AsyncRequest](
+                                                    key: String,
+                                                    data: Array[Byte],
+                                                    ctx: Option[Any]): Try[Unit] = Try {
+    // Create lease
+    val leaseAsyncResp = client.getLeaseClient.grant(8L)
+    val leaseId = leaseAsyncResp.get.getID
 
     // Create
-    val createResponse = create(path, data, ctx,
-      PutOption.newBuilder
-        .withLeaseId(leaseId)
-      .build
-    )
-
-    if (createResponse.resultCode != KeeperException.Code.OK)
-      createResponse
+    tryCreate(EtcdClient.absolutePath(key, root), data, ctx, PutOption.newBuilder.withLeaseId(leaseId).build).get
 
     // Lease keep alive
-    val (status, _) = Try(client.getLeaseClient.keepAlive(leaseId)) match {
-      case Success(_) => (KeeperException.Code.OK, None)
-      case Failure(ex: EtcdException) if ex.getErrorCode == ErrorCode.INVALID_ARGUMENT =>
-        (KeeperException.Code.BADARGUMENTS, None)
-      case _ =>
-        (KeeperException.Code.SYSTEMERROR, None)
-    }
-
-
-    CreateResponse(status, path, ctx, "").asInstanceOf[Req#Response]
+    client.getLeaseClient.keepAlive(leaseId)
+    ()
   }
 
-  private def create[Req <: AsyncRequest](
-                                           path: String,
-                                           data: Array[Byte],
-                                           ctx: Option[Any],
-                                           option: PutOption = PutOption.DEFAULT):Req#Response = {
-    val createAsyncResp = client.getKVClient.put(
-      path,
-      data,
-      option
-    )
-
-    val (createStatus, _) = handleAsyncRequestResponse(createAsyncResp) { _ => (KeeperException.Code.OK, None) }
-
-    CreateResponse(createStatus, path, ctx, "").asInstanceOf[Req#Response]
+  private def createWithLease[Req <: AsyncRequest](
+                                                    key: String,
+                                                    data: Array[Byte],
+                                                    ctx: Option[Any]): Req#Response = {
+    val response = tryCreateWithLease(key, data, ctx)
+    val zkResult = new ZkCreateResponse(response)
+    CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
   }
 
+
+  private def create[Req <: AsyncRequest](key: String,
+                     data: Array[Byte],
+                     ctx: Option[Any],
+                     option: PutOption = PutOption.DEFAULT):Req#Response = {
+
+    val response = tryCreate(EtcdClient.absolutePath(root, key), data, ctx, option)
+    val zkResult = new ZkCreateResponse(response)
+
+    CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
+  }
+
+
+  private def tryCreate[Req <: AsyncRequest](
+                                              key: String,
+                                              data: Array[Byte],
+                                              ctx: Option[Any],
+                                              option: PutOption = PutOption.DEFAULT): Try[Unit] = Try {
+    val createAsyncResp = client.getKVClient.put(key, data, option)
+    createAsyncResp.get
+
+    ()
+  }
 }
 
 private[etcd] object EtcdClient {
