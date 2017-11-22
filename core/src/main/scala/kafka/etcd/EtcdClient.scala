@@ -17,8 +17,8 @@
 package kafka.etcd
 
 import com.coreos.jetcd.Client
-import com.coreos.jetcd.kv.GetResponse
-import com.coreos.jetcd.options.{GetOption, PutOption}
+import com.coreos.jetcd.kv.{DeleteResponse, GetResponse}
+import com.coreos.jetcd.options.{DeleteOption, GetOption, PutOption}
 import com.coreos.jetcd.watch.WatchEvent
 import kafka.metastore.KafkaMetastore
 import kafka.utils.Logging
@@ -190,7 +190,12 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 
         SetDataResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
 
-      case DeleteRequest(path, version, ctx) => ???
+      case DeleteRequest(path, _, ctx) =>
+        val response = tryDelete(EtcdClient.absolutePath(root, path), ctx)(deleted)
+        val zkResult = new ZkDeleteResponse(response)
+
+        kafka.zookeeper.DeleteResponse(zkResult.resultCode, path, ctx).asInstanceOf[Req#Response]
+
       case GetAclRequest(path, ctx) => ???
       case SetAclRequest(path, acl, version, ctx) => ???
     }
@@ -253,6 +258,14 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     response.getCount match {
       case 0 => false
       case 1 => true
+      case _ => throw new Error
+    }
+  }
+
+  private def deleted(response: com.coreos.jetcd.kv.DeleteResponse): Boolean = {
+    response.getDeleted match {
+      case 0 => false
+      case x if 1 >= x => true
       case _ => throw new Error
     }
   }
@@ -324,6 +337,15 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 
     ()
   }
+
+  private def tryDelete[U](
+                            key: String,
+                            ctx: Option[Any],
+                            option: DeleteOption = DeleteOption.DEFAULT)
+                          (extractResult: DeleteResponse => U): Try[U]= Try {
+    val asyncResp = client.getKVClient.delete(key)
+    asyncResp.get()
+  }.map(extractResult(_))
 }
 
 private[etcd] object EtcdClient {
