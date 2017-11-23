@@ -25,15 +25,15 @@ import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Future, blocking}
 
-private[etcd] class EtcdListener(client: Client)(eventHandler: (WatchEvent) =>Unit) {
+private[etcd] class EtcdListener(keyPrefix: String, client: Client)(eventHandler: (WatchEvent) =>Unit) {
 
   import Implicits._
 
-  // Watcher for watching all keys prefixed with '/'
+  // Watcher for watching all keys prefixed with `root`
   private val watcher: Watcher = client.getWatchClient.watch(
-    "/",
+    keyPrefix,
     WatchOption.newBuilder()
-        .withPrefix("/")
+        .withPrefix(keyPrefix)
       .build()
   )
 
@@ -54,6 +54,6 @@ private[etcd] class EtcdListener(client: Client)(eventHandler: (WatchEvent) =>Un
 }
 
 private[etcd] object EtcdListener {
-  def apply(client: Client)(eventHandler: (WatchEvent) =>Unit): EtcdListener = new EtcdListener(client)(eventHandler)
+  def apply(keyPrefix: String, client: Client)(eventHandler: (WatchEvent) =>Unit): EtcdListener = new EtcdListener(keyPrefix, client)(eventHandler)
   
 }

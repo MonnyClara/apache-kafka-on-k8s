@@ -35,10 +35,13 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 
   import Implicits._
 
-  private val connectionStringWithoutChRoot = connectionString.substring(0, connectionString.indexOf("/"))
-  private val root = connectionString.substring(connectionString.indexOf("/"))
 
-  private val client: Client = Client.builder.endpoints(connectionStringWithoutChRoot).build()
+  private val connStringParts = connectionString.split('/')
+
+  private val connectionStringWithoutPrefix = connStringParts.head
+  private val prefix = connStringParts.tail.mkString("/","/", "")
+
+  private val client: Client = Client.builder.endpoints(connectionStringWithoutPrefix).build()
 
   // Event handlers to handler events received from ETCD
   private val createHandlers = new ChangeHandlers
@@ -48,7 +51,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 
 
   // Subscribe to etcd events
-  private val etcdListener = EtcdListener(client) {
+  private val etcdListener = EtcdListener(prefix, client) {
     event: WatchEvent =>
       val eventType = event.getEventType
       val eventData = Option(event.getKeyValue)
@@ -128,13 +131,13 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 
     request match {
       case ExistsRequest(path, ctx) =>
-        val response: Try[Boolean] = tryExists(EtcdClient.absolutePath(root, path))
+        val response: Try[Boolean] = tryExists(EtcdClient.absolutePath(prefix, path))
 
         val zkResult = new ZkExistsResponse(response)
         ExistsResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
 
       case GetDataRequest(path, ctx) =>
-        val response: Try[Option[Array[Byte]]] = tryGetData(EtcdClient.absolutePath(root, path)) {
+        val response: Try[Option[Array[Byte]]] = tryGetData(EtcdClient.absolutePath(prefix, path)) {
           response =>
             if (exists(response)) {
               Some(response.getKvs.get(0).getValue)
@@ -152,16 +155,16 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 
         val response: Try[Set[String]] =
           tryGetData(
-            EtcdClient.absolutePath(root, parent),
+            EtcdClient.absolutePath(prefix, parent),
             GetOption.newBuilder()
-              .withPrefix(EtcdClient.absolutePath(root, parent))
+              .withPrefix(EtcdClient.absolutePath(prefix, parent))
               .withKeysOnly(true)
               .build()
           ) {
             response =>
               val keys: Set[String] = response.getKvs.asScala.map(_.getKey.toStringUtf8).map {
                 k =>
-                  val startIdx = EtcdClient.absolutePath(root, parent).length
+                  val startIdx = EtcdClient.absolutePath(prefix, parent).length
 
                   k.indexOf('/', startIdx) match {
                     case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
@@ -185,13 +188,13 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
         }
 
       case SetDataRequest(path, data, _, ctx) =>
-        val response = tryCreate(EtcdClient.absolutePath(root, path), data, ctx)
+        val response = tryCreate(EtcdClient.absolutePath(prefix, path), data, ctx)
         val zkResult = new ZkSetDataResponse(response)
 
         SetDataResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
 
       case DeleteRequest(path, _, ctx) =>
-        val response = tryDelete(EtcdClient.absolutePath(root, path), ctx)(deleted)
+        val response = tryDelete(EtcdClient.absolutePath(prefix, path), ctx)(deleted)
         val zkResult = new ZkDeleteResponse(response)
 
         kafka.zookeeper.DeleteResponse(zkResult.resultCode, path, ctx).asInstanceOf[Req#Response]
@@ -298,7 +301,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     val leaseId = leaseAsyncResp.get.getID
 
     // Create
-    tryCreate(EtcdClient.absolutePath(key, root), data, ctx, PutOption.newBuilder.withLeaseId(leaseId).build).get
+    tryCreate(EtcdClient.absolutePath(key, prefix), data, ctx, PutOption.newBuilder.withLeaseId(leaseId).build).get
 
     // Lease keep alive
     client.getLeaseClient.keepAlive(leaseId)
@@ -320,7 +323,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
                      ctx: Option[Any],
                      option: PutOption = PutOption.DEFAULT):Req#Response = {
 
-    val response = tryCreate(EtcdClient.absolutePath(root, key), data, ctx, option)
+    val response = tryCreate(EtcdClient.absolutePath(prefix, key), data, ctx, option)
     val zkResult = new ZkCreateResponse(response)
 
     CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
@@ -349,5 +352,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 }
 
 private[etcd] object EtcdClient {
-  def absolutePath(root: String, path: String) = s"$root$path"
+  val DEFAULT_PREFIX = "/"
+
+  def absolutePath(prefix: String, path: String) = if (prefix != DEFAULT_PREFIX) s"$prefix$path" else path
 }
