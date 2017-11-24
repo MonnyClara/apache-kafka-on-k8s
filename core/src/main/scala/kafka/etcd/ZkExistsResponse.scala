@@ -22,9 +22,7 @@ import org.apache.zookeeper.KeeperException
 import scala.util.Try
 
 private[etcd] class ZkExistsResponse(response: Try[Boolean]) extends ZkResult(response) {
-  private val zkResult: Try[KeeperException.Code] = response.map {
-    exists => if (exists) KeeperException.Code.OK else KeeperException.Code.NONODE
-  } recover(onError)
-
-  override def resultCode = zkResult.get
+  override def resultCode: KeeperException.Code = response.map{ resp =>
+    if(resp) KeeperException.Code.OK else  KeeperException.Code.NONODE
+  }.recover(onError).get
 }

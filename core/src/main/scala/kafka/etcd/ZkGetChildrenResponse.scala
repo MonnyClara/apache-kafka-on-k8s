@@ -17,18 +17,31 @@
 
 package kafka.etcd
 
+import com.coreos.jetcd.kv.TxnResponse
 import org.apache.zookeeper.KeeperException
+import scala.collection.JavaConverters._
 
 import scala.util.Try
 
-private[etcd] class ZkGetChildrenResponse(response: Try[Set[String]]) extends ZkResult(response){
+private[etcd] class ZkGetChildrenResponse(tryResponse: Try[TxnResponse], parent: String) extends ZkResult(tryResponse){
 
-  private val zkResultCode =
-    response
-      .map(_ => KeeperException.Code.OK)
-      .recover(onError)
+  override def resultCode: KeeperException.Code = tryResponse.map{ resp =>
+    if(resp.isSucceeded) KeeperException.Code.OK else  KeeperException.Code.NONODE
+  }.recover(onError).get
 
-  override def resultCode = zkResultCode.get
-
-  def childrenKeys: Set[String] = response.getOrElse(Set.empty)
+  def childrenKeys: Set[String] = {
+    val startIdx = parent.length
+    tryResponse.map { resp =>
+      if(resp.isSucceeded){
+        resp.getGetResponses.get(0).getKvs.asScala.map(_.getKey.toStringUtf8).map {
+          k =>
+            k.indexOf('/', startIdx) match {
+              case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
+              case _ => k.substring(startIdx)
+            }
+        }.toSet
+      } else
+        Set.empty[String]
+    }.getOrElse(Set.empty[String])
+  }
 }

@@ -17,7 +17,8 @@
 package kafka.etcd
 
 import com.coreos.jetcd.Client
-import com.coreos.jetcd.kv.{DeleteResponse, GetResponse}
+import com.coreos.jetcd.kv.TxnResponse
+import com.coreos.jetcd.op.{Cmp, CmpTarget, Op}
 import com.coreos.jetcd.options.{DeleteOption, GetOption, PutOption}
 import com.coreos.jetcd.watch.WatchEvent
 import kafka.metastore.KafkaMetastore
@@ -25,7 +26,6 @@ import kafka.utils.Logging
 import kafka.zookeeper._
 import org.apache.zookeeper.CreateMode
 
-import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
@@ -39,7 +39,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
   private val connStringParts = connectionString.split('/')
 
   private val connectionStringWithoutPrefix = connStringParts.head
-  private val prefix = connStringParts.tail.mkString("/","/", "")
+  private val prefix = connStringParts.tail.mkString("/", "/", "")
 
   private val client: Client = Client.builder.endpoints(connectionStringWithoutPrefix).build()
 
@@ -130,54 +130,11 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     info(s"Hanlde request: $request")
 
     request match {
-      case ExistsRequest(path, ctx) =>
-        val response: Try[Boolean] = tryExists(EtcdClient.absolutePath(prefix, path))
+      case ExistsRequest(path, ctx) => exists(path, ctx)
 
-        val zkResult = new ZkExistsResponse(response)
-        ExistsResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
+      case GetDataRequest(path, ctx) => getData(path, ctx)
 
-      case GetDataRequest(path, ctx) =>
-        val response: Try[Option[Array[Byte]]] = tryGetData(EtcdClient.absolutePath(prefix, path)) {
-          response =>
-            if (exists(response)) {
-              Some(response.getKvs.get(0).getValue)
-            }
-            else {
-              None
-            }
-        }
-
-        val zkResult = new ZkGetDataResponse(response)
-        GetDataResponse(zkResult.resultCode, path, ctx, zkResult.data.orNull, null).asInstanceOf[Req#Response]
-
-      case GetChildrenRequest(path, ctx) =>
-        val parent = if (path.endsWith("/")) path else s"$path/"
-
-        val response: Try[Set[String]] =
-          tryGetData(
-            EtcdClient.absolutePath(prefix, parent),
-            GetOption.newBuilder()
-              .withPrefix(EtcdClient.absolutePath(prefix, parent))
-              .withKeysOnly(true)
-              .build()
-          ) {
-            response =>
-              val keys: Set[String] = response.getKvs.asScala.map(_.getKey.toStringUtf8).map {
-                k =>
-                  val startIdx = EtcdClient.absolutePath(prefix, parent).length
-
-                  k.indexOf('/', startIdx) match {
-                    case endIdx if endIdx >= startIdx => k.substring(startIdx, endIdx)
-                    case _ => k.substring(startIdx)
-                  }
-              }.toSet
-
-              keys
-          }
-
-        val zkResult = new ZkGetChildrenResponse(response)
-
-        GetChildrenResponse(zkResult.resultCode, path, ctx, zkResult.childrenKeys.toSeq, null).asInstanceOf[Req#Response]
+      case GetChildrenRequest(path, ctx) => getChildrenData(path, ctx)
 
       case CreateRequest(path, data, _, createMode, ctx) =>
         createMode match {
@@ -187,17 +144,9 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
           case _ => ???
         }
 
-      case SetDataRequest(path, data, _, ctx) =>
-        val response = tryCreate(EtcdClient.absolutePath(prefix, path), data, ctx)
-        val zkResult = new ZkSetDataResponse(response)
+      case SetDataRequest(path, data, _, ctx) => setData(path, data, ctx)
 
-        SetDataResponse(zkResult.resultCode, path, ctx, null).asInstanceOf[Req#Response]
-
-      case DeleteRequest(path, _, ctx) =>
-        val response = tryDelete(EtcdClient.absolutePath(prefix, path), ctx)(deleted)
-        val zkResult = new ZkDeleteResponse(response)
-
-        kafka.zookeeper.DeleteResponse(zkResult.resultCode, path, ctx).asInstanceOf[Req#Response]
+      case DeleteRequest(path, _, ctx) => delete(path, ctx)
 
       case GetAclRequest(path, ctx) => ???
       case SetAclRequest(path, acl, version, ctx) => ???
@@ -247,65 +196,42 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     }
   }
 
-  private def tryExists(key: String): Try[Boolean] = {
-    tryGetData(key,
-      GetOption
-        .newBuilder()
-        .withCountOnly(true)
-        .build()
-    )(exists)
+  private def exists [Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
+    val response = tryExists(EtcdClient.absolutePath(prefix, key))
+    val zkResult = new ZkExistsResponse(response)
+    ExistsResponse(zkResult.resultCode, key, ctx, null).asInstanceOf[Req#Response]
   }
 
-
-  private def exists(response: GetResponse): Boolean = {
-    response.getCount match {
-      case 0 => false
-      case 1 => true
-      case _ => throw new Error
-    }
+  private def getData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
+    val response = tryGetData(EtcdClient.absolutePath(prefix, key))
+    val zkResult = new ZkGetDataResponse(response)
+    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, null).asInstanceOf[Req#Response]
   }
 
-  private def deleted(response: com.coreos.jetcd.kv.DeleteResponse): Boolean = {
-    response.getDeleted match {
-      case 0 => false
-      case x if 1 >= x => true
-      case _ => throw new Error
-    }
+  private def getChildrenData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
+    val parent = if (key.endsWith("/")) key else s"$key/"
+    val response = tryGetData(
+      EtcdClient.absolutePath(prefix, parent),
+      GetOption.newBuilder().withKeysOnly(true).withPrefix(EtcdClient.absolutePath(prefix, parent)).build())
+    val zkResult = new ZkGetChildrenResponse(response, parent)
+    GetChildrenResponse(zkResult.resultCode, key, ctx, zkResult.childrenKeys.toSeq, null).asInstanceOf[Req#Response]
   }
 
-  private def tryGetData[U](
-                             key: String,
-                             option: GetOption = GetOption.DEFAULT)
-                           (extractResult: GetResponse => U): Try[U] = Try {
-    val asyncResponse = client.getKVClient.get(key, option)
-
-    asyncResponse.get
-  }.map(extractResult(_))
-
-
-  private def tryGrantLease(ttl: Long): Try[Long] = Try {
-    val leaseAsyncResp = client.getLeaseClient.grant(ttl)
-    leaseAsyncResp.get.getID
+  private def delete[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
+    val response = tryDelete(EtcdClient.absolutePath(prefix, key))
+    val zkResult = new ZkDeleteResponse(response)
+    DeleteResponse(zkResult.resultCode, key, ctx).asInstanceOf[Req#Response]
   }
 
-  private def tryKeepLeaseAlive(leaseId: Long): Try[Any] = Try {
-    client.getLeaseClient.keepAlive(leaseId)
-  }
-
-  private def tryCreateWithLease[Req <: AsyncRequest](
-                                                    key: String,
-                                                    data: Array[Byte],
-                                                    ctx: Option[Any]): Try[Unit] = Try {
-    // Create lease
-    val leaseAsyncResp = client.getLeaseClient.grant(8L)
-    val leaseId = leaseAsyncResp.get.getID
-
-    // Create
-    tryCreate(EtcdClient.absolutePath(key, prefix), data, ctx, PutOption.newBuilder.withLeaseId(leaseId).build).get
-
-    // Lease keep alive
-    client.getLeaseClient.keepAlive(leaseId)
-    ()
+  //This method only sets data does not create it. This can be done differently
+  // in ETCD but ZK cannot do it in one request
+  private def setData[Req <: AsyncRequest](
+                                            key: String,
+                                            data: Array[Byte],
+                                            ctx: Option[Any]): Req#Response = {
+    val response = trySetData(EtcdClient.absolutePath(prefix, key), data, ctx)
+    val zkResult = new ZkSetDataResponse(response)
+    SetDataResponse(zkResult.resultCode, key, ctx, null).asInstanceOf[Req#Response]
   }
 
   private def createWithLease[Req <: AsyncRequest](
@@ -317,11 +243,10 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
   }
 
-
   private def create[Req <: AsyncRequest](key: String,
-                     data: Array[Byte],
-                     ctx: Option[Any],
-                     option: PutOption = PutOption.DEFAULT):Req#Response = {
+                                          data: Array[Byte],
+                                          ctx: Option[Any],
+                                          option: PutOption = PutOption.DEFAULT): Req#Response = {
 
     val response = tryCreate(EtcdClient.absolutePath(prefix, key), data, ctx, option)
     val zkResult = new ZkCreateResponse(response)
@@ -329,26 +254,67 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
     CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
   }
 
+  private def tryCreateWithLease[Req <: AsyncRequest](
+                                                       key: String,
+                                                       data: Array[Byte],
+                                                       ctx: Option[Any]): Try[TxnResponse] = Try {
+    // Create lease
+    val leaseAsyncResp = client.getLeaseClient.grant(8L)
+    val leaseId = leaseAsyncResp.get.getID
 
+    // Create
+    val txnResponse = tryCreate(
+      EtcdClient.absolutePath(key, prefix),
+      data,
+      ctx,
+      PutOption.newBuilder.withLeaseId(leaseId).build).get
+
+    // Lease keep alive
+    if (txnResponse.isSucceeded)
+      client.getLeaseClient.keepAlive(leaseId)
+
+    txnResponse
+  }
+
+
+  // In ETCD if version for the given key is zero it means that key does not exist
   private def tryCreate[Req <: AsyncRequest](
                                               key: String,
                                               data: Array[Byte],
                                               ctx: Option[Any],
-                                              option: PutOption = PutOption.DEFAULT): Try[Unit] = Try {
-    val createAsyncResp = client.getKVClient.put(key, data, option)
-    createAsyncResp.get
-
-    ()
+                                              option: PutOption = PutOption.DEFAULT): Try[TxnResponse] = Try {
+    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.EQUAL, CmpTarget.version(0))).
+      Then(Op.put(key, data, option)).commit().get()
   }
 
-  private def tryDelete[U](
-                            key: String,
-                            ctx: Option[Any],
-                            option: DeleteOption = DeleteOption.DEFAULT)
-                          (extractResult: DeleteResponse => U): Try[U]= Try {
-    val asyncResp = client.getKVClient.delete(key)
-    asyncResp.get()
-  }.map(extractResult(_))
+  // In ETCD if version for the given key is bigger than zero it means that key exists
+  private def trySetData[Req <: AsyncRequest](
+                                               key: String,
+                                               data: Array[Byte],
+                                               ctx: Option[Any],
+                                               option: PutOption = PutOption.DEFAULT): Try[TxnResponse] = Try {
+    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0))).
+      Then(Op.put(key, data, option)).commit().get()
+  }
+
+  private def tryDelete[Req <: AsyncRequest](
+                                              key: String,
+                                              option: DeleteOption = DeleteOption.DEFAULT): Try[TxnResponse] = Try {
+    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0))).
+      Then(Op.delete(key, option)).commit().get()
+  }
+
+  private def tryExists[Req <: AsyncRequest](key: String): Try[Boolean] = Try {
+    val response = client.getKVClient.txn().If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0))).commit().get()
+    response.isSucceeded
+  }
+
+  private def tryGetData[Req <: AsyncRequest](
+                                               key: String,
+                                               option: GetOption = GetOption.DEFAULT): Try[TxnResponse] = Try {
+    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0))).
+      Then(Op.get(key, option)).commit().get()
+  }
 }
 
 private[etcd] object EtcdClient {
