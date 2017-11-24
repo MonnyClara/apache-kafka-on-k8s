@@ -17,18 +17,26 @@
 
 package kafka.etcd
 
+import com.coreos.jetcd.kv.TxnResponse
 import org.apache.zookeeper.KeeperException
 
 import scala.util.Try
 
-private[etcd] class ZkGetDataResponse(response: Try[Option[Array[Byte]]]) extends ZkResult(response){
-  private val zkResultCode = response.map {
-    case Some(_) => KeeperException.Code.OK
-    case None => KeeperException.Code.NONODE
-  } recover(onError)
+private[etcd] class ZkGetDataResponse(tryResponse: Try[TxnResponse]) extends ZkResult(tryResponse) {
 
+  override def resultCode: KeeperException.Code = tryResponse.map { resp =>
+    if (resp.isSucceeded) {
+      Some(resp.getGetResponses.get(0).getKvs.get(0).getValue)
+      KeeperException.Code.OK
+    } else KeeperException.Code.NONODE
+  }.recover(onError).get
 
-  override def resultCode: KeeperException.Code = zkResultCode.get
-
-  def data: Option[Array[Byte]] = response.getOrElse(None)
+  // We need to think this through because I think this one does not works
+  def data: Option[Array[Byte]] =
+    tryResponse.map { resp =>
+      if (resp.isSucceeded) {
+        Some(resp.getGetResponses.get(0).getKvs.get(0).getValue.getBytes)
+      }
+      else None
+    }.getOrElse(None)
 }

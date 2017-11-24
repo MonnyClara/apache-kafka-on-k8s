@@ -17,11 +17,13 @@
 
 package kafka.etcd
 
+import com.coreos.jetcd.kv.TxnResponse
 import org.apache.zookeeper.KeeperException
 
 import scala.util.Try
 
-class ZkSetDataResponse(response: Try[Unit]) extends ZkResult(response){
-  override def resultCode:KeeperException.Code = response.map(_ => KeeperException.Code.OK).recover(onError).get
+class ZkSetDataResponse(response: Try[TxnResponse]) extends ZkResult(response){
+  override def resultCode:KeeperException.Code = response.map{ resp =>
+    if (resp.isSucceeded) KeeperException.Code.OK else KeeperException.Code.NONODE}.recover(onError).get
 }
 
