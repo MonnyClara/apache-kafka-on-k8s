@@ -27,10 +27,12 @@ import kafka.zookeeper._
 import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.CreateMode
 
+import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 import scala.util.Try
+import scala.collection.JavaConverters._
 
 class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) extends KafkaMetastore with Logging {
 
@@ -148,7 +150,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
         createMode match {
           case CreateMode.EPHEMERAL => createWithLease(path, data, ctx)
           case CreateMode.PERSISTENT => create(path, data, ctx)
-          case CreateMode.PERSISTENT_SEQUENTIAL => ???
+          case CreateMode.PERSISTENT_SEQUENTIAL => createSequential(path, data, ctx)
           case _ => ???
         }
 
@@ -262,6 +264,14 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
     CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
   }
 
+  private def createSequential[Req <: AsyncRequest](key: String,
+                                                    data: Array[Byte],
+                                                    ctx: Option[Any]): Req#Response = {
+    val result = new ExecuteWithResponseMetadata(() => tryCreateSequential(EtcdClient.absolutePath(prefix, key), data))
+    val zkResult = new ZkCreateResponse(result.response)
+    CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
+  }
+
   private def tryCreateWithLease[Req <: AsyncRequest](
                                                        key: String,
                                                        data: Array[Byte],
@@ -293,6 +303,75 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
                                               option: PutOption = PutOption.DEFAULT): Try[TxnResponse] = Try {
     client.getKVClient.txn().If(new Cmp(key, Cmp.Op.EQUAL, CmpTarget.version(0))).
       Then(Op.put(key, data, option)).commit().get()
+  }
+
+  // ETCD does not support SEQUENTIAL keys out of the box.
+  // This implementation is based on https://github.com/coreos/etcd/blob/master/contrib/recipes/key.go
+  // TODO: we need to handle various error cases when <key> and __<key> get out of sync
+  private def tryCreateSequential[Req <: AsyncRequest](key: String,
+                                                       data: Array[Byte]): Try[TxnResponse] = Try {
+    // sequential keys are stored as <key>nnnnn
+    // e.g. key00001
+    //      key00002
+    //      key00003
+
+    @tailrec
+    def createSeqKV(): TxnResponse = {
+      // get the last sequential key
+      val seqKeys = client.getKVClient.get(
+        key,
+        GetOption.newBuilder()
+          .withKeysOnly(true)
+          .withPrefix(key)
+          .withSortField(GetOption.SortTarget.KEY)
+          .withSortOrder(GetOption.SortOrder.DESCEND)
+          .withLimit(1L)
+          .build()
+      ).get.getKvs.asScala
+
+
+      // determine next sequence number
+      val nextSeqNumber: Int = seqKeys.headOption.map {
+        kv =>
+          val key: String = kv.getKey
+          key match {
+            case EtcdClient.SEQUENCEKEY_REGEX(_, seqNumber) => seqNumber.toInt + 1 // increment current seq number by 1
+            case _ =>
+              error(s"'$key' is not a sequence key !")
+              throw new Exception(s"'$key' is not a sequence key !")
+          }
+      }.getOrElse(0) // if no <key> found than default sequence number to 0
+
+      val nextKey = f"$key$nextSeqNumber%010d"
+
+      // the key where we track the revision number of when the sequence key was created
+      // if the modification revision number of __<key> is the same as the creation revision number of
+      // last sequential <key> than no new sequential key was created meanwhile so we can go ahead and create a new one
+      // if meanwhile there was a new sequential <key> created since we grabbed the last <key> than the modification
+      // revision number moved which mean we need to start from the beginning in order to generate
+      // the appropriate next sequence key
+      val revisionTrackerKey = s"__$key"
+
+      val revision = seqKeys.headOption.map(_.getCreateRevision).getOrElse(0L)
+
+      // if __<key> hasn't been created yet OR
+      // modification revision of __<key> hasn't been changed by someone else
+      val txnResponse = client.getKVClient.txn
+        .If(
+          new Cmp(revisionTrackerKey, Cmp.Op.EQUAL, CmpTarget.modRevision(revision))
+        ).If(
+        new Cmp(revisionTrackerKey, Cmp.Op.EQUAL, CmpTarget.version(0))
+      ).Then(
+        Op.put(revisionTrackerKey, "", PutOption.DEFAULT),
+        Op.put(nextKey, data, PutOption.DEFAULT)
+      ).commit().get()
+
+      if (txnResponse.isSucceeded)
+        txnResponse
+      else createSeqKV
+    }
+
+    createSeqKV
   }
 
   // In ETCD if version for the given key is bigger than zero it means that key exists
@@ -327,6 +406,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
 
 private[etcd] object EtcdClient {
   val DEFAULT_PREFIX = "/"
+  val SEQUENCEKEY_REGEX = """(.+)(\d+)$""".r
 
   def absolutePath(prefix: String, path: String): String = if (prefix != DEFAULT_PREFIX) s"$prefix$path" else path
 }

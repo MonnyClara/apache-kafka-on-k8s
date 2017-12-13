@@ -29,7 +29,7 @@ private[etcd] class EtcdListener(keyPrefix: String, client: Client)(eventHandler
 
   import Implicits._
 
-  // Watcher for watching all keys prefixed with `root`
+  // Watcher for watching all keys prefixed with `keyPrefix`
   private val watcher: Watcher = client.getWatchClient.watch(
     keyPrefix,
     WatchOption.newBuilder()
