@@ -24,6 +24,7 @@ import com.coreos.jetcd.watch.WatchEvent
 import kafka.metastore.KafkaMetastore
 import kafka.utils.Logging
 import kafka.zookeeper._
+import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.CreateMode
 
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -31,9 +32,16 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 import scala.util.Try
 
-class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends KafkaMetastore with Logging {
+class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) extends KafkaMetastore with Logging {
 
   import Implicits._
+
+  //Wrapping requests to measure how long does that request take
+  private class ExecuteWithResponseMetadata[R](body:  () => R) {
+    private val sendTimeMs: Long = time.hiResClockMs()
+    val response: R = body()
+    val responseMetadata = ResponseMetadata(sendTimeMs, receivedTimeMs = time.hiResClockMs())
+  }
 
 
   private val connStringParts = connectionString.split('/')
@@ -197,30 +205,30 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
   }
 
   private def exists [Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val response = tryExists(EtcdClient.absolutePath(prefix, key))
-    val zkResult = new ZkExistsResponse(response)
-    ExistsResponse(zkResult.resultCode, key, ctx, null).asInstanceOf[Req#Response]
+    val result = new ExecuteWithResponseMetadata (() => tryExists(EtcdClient.absolutePath(prefix, key)))
+    val zkResult = new ZkExistsResponse(result.response)
+    ExistsResponse(zkResult.resultCode, key, ctx, null, result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   private def getData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val response = tryGetData(EtcdClient.absolutePath(prefix, key))
-    val zkResult = new ZkGetDataResponse(response)
-    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, null).asInstanceOf[Req#Response]
+    val result = new ExecuteWithResponseMetadata(() => tryGetData(EtcdClient.absolutePath(prefix, key)))
+    val zkResult = new ZkGetDataResponse(result.response)
+    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, null, result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   private def getChildrenData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
     val parent = if (key.endsWith("/")) key else s"$key/"
-    val response = tryGetData(
+    val result = new ExecuteWithResponseMetadata(() => tryGetData(
       EtcdClient.absolutePath(prefix, parent),
-      GetOption.newBuilder().withKeysOnly(true).withPrefix(EtcdClient.absolutePath(prefix, parent)).build())
-    val zkResult = new ZkGetChildrenResponse(response, parent)
-    GetChildrenResponse(zkResult.resultCode, key, ctx, zkResult.childrenKeys.toSeq, null).asInstanceOf[Req#Response]
+      GetOption.newBuilder().withKeysOnly(true).withPrefix(EtcdClient.absolutePath(prefix, parent)).build()))
+    val zkResult = new ZkGetChildrenResponse(result.response, parent)
+    GetChildrenResponse(zkResult.resultCode, key, ctx, zkResult.childrenKeys.toSeq, null, result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   private def delete[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val response = tryDelete(EtcdClient.absolutePath(prefix, key))
-    val zkResult = new ZkDeleteResponse(response)
-    DeleteResponse(zkResult.resultCode, key, ctx).asInstanceOf[Req#Response]
+    val result = new ExecuteWithResponseMetadata(() => tryDelete(EtcdClient.absolutePath(prefix, key)))
+    val zkResult = new ZkDeleteResponse(result.response)
+    DeleteResponse(zkResult.resultCode, key, ctx, result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   //This method only sets data does not create it. This can be done differently
@@ -229,18 +237,19 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
                                             key: String,
                                             data: Array[Byte],
                                             ctx: Option[Any]): Req#Response = {
-    val response = trySetData(EtcdClient.absolutePath(prefix, key), data, ctx)
-    val zkResult = new ZkSetDataResponse(response)
-    SetDataResponse(zkResult.resultCode, key, ctx, null).asInstanceOf[Req#Response]
+
+    val result = new ExecuteWithResponseMetadata(() => trySetData(EtcdClient.absolutePath(prefix, key), data, ctx))
+    val zkResult = new ZkSetDataResponse(result.response)
+    SetDataResponse(zkResult.resultCode, key, ctx, null, result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   private def createWithLease[Req <: AsyncRequest](
                                                     key: String,
                                                     data: Array[Byte],
                                                     ctx: Option[Any]): Req#Response = {
-    val response = tryCreateWithLease(key, data, ctx)
-    val zkResult = new ZkCreateResponse(response)
-    CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
+    val result = new ExecuteWithResponseMetadata(() => tryCreateWithLease(key, data, ctx))
+    val zkResult = new ZkCreateResponse(result.response)
+    CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   private def create[Req <: AsyncRequest](key: String,
@@ -248,10 +257,9 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
                                           ctx: Option[Any],
                                           option: PutOption = PutOption.DEFAULT): Req#Response = {
 
-    val response = tryCreate(EtcdClient.absolutePath(prefix, key), data, ctx, option)
-    val zkResult = new ZkCreateResponse(response)
-
-    CreateResponse(zkResult.resultCode, key, ctx, "").asInstanceOf[Req#Response]
+    val result = new ExecuteWithResponseMetadata(() => tryCreate(EtcdClient.absolutePath(prefix, key), data, ctx, option))
+    val zkResult = new ZkCreateResponse(result.response)
+    CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
   }
 
   private def tryCreateWithLease[Req <: AsyncRequest](
@@ -320,5 +328,5 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka") extends Kafk
 private[etcd] object EtcdClient {
   val DEFAULT_PREFIX = "/"
 
-  def absolutePath(prefix: String, path: String) = if (prefix != DEFAULT_PREFIX) s"$prefix$path" else path
+  def absolutePath(prefix: String, path: String): String = if (prefix != DEFAULT_PREFIX) s"$prefix$path" else path
 }
