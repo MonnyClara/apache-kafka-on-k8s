@@ -19,7 +19,7 @@ package kafka.etcd
 import scala.collection.JavaConverters._
 
 
-class ChangeHandlers {
+private[etcd] class ChangeHandlers {
   type Handler = ()=> Unit
 
   private val handlersByKey = new java.util.concurrent.ConcurrentHashMap[String, Seq[Handler]].asScala
