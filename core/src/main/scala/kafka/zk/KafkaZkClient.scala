@@ -40,6 +40,7 @@ import org.apache.zookeeper.{CreateMode, KeeperException, ZooKeeper}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{Seq, mutable}
+import scala.collection.JavaConverters._
 
 /**
  * Provides higher level Kafka-specific operations on top of the pipelined [[kafka.zookeeper.ZooKeeperClient]].
@@ -51,8 +52,12 @@ import scala.collection.{Seq, mutable}
  * easier to quickly migrate away from `ZkUtils`. We should revisit this once the migration is completed and tests are
  * in place. We should also consider whether a monolithic [[kafka.zk.ZkData]] is the way to go.
  */
-class KafkaZkClient(kafkaMetastore: List[KafkaMetastore], isSecure: Boolean, time: Time) extends AutoCloseable with
+class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean, time: Time) extends AutoCloseable with
   Logging with KafkaMetricsGroup {
+
+  def this(kafkaMetastore: java.util.List[_<: KafkaMetastore], isSecure: Boolean, time: Time) {
+    this(kafkaMetastore.asScala.toList, isSecure, time)
+  }
 
   override def metricName(name: String, metricTags: scala.collection.Map[String, String]): MetricName = {
     explicitMetricName("kafka.server", "ZooKeeperClientMetrics", name, metricTags)

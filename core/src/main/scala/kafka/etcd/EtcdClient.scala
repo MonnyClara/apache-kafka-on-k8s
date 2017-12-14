@@ -37,15 +37,9 @@ import scala.collection.JavaConverters._
 class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) extends KafkaMetastore with Logging {
 
   import Implicits._
+  import EtcdClient._
 
-  //Wrapping requests to measure how long does that request take
-  private class ExecuteWithResponseMetadata[R](body:  () => R) {
-    private val sendTimeMs: Long = time.hiResClockMs()
-    val response: R = body()
-    val responseMetadata = ResponseMetadata(sendTimeMs, receivedTimeMs = time.hiResClockMs())
-  }
-
-
+  implicit private val _time: Time = time
   private val connStringParts = connectionString.split('/')
 
   private val connectionStringWithoutPrefix = connStringParts.head
@@ -167,8 +161,8 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
   override def handleRequests[Req <: AsyncRequest](requests: Seq[Req]): Seq[Req#Response] = {
     info(s"Handle requests: $requests")
 
-    val asynResponses: Seq[Future[Req#Response]] = requests.map(req => Future(handleRequest(req)))
-    val responses: Future[Seq[Req#Response]] = Future.fold(asynResponses)(Seq.empty[Req#Response])(_ :+ _)
+    val asyncResponses: Seq[Future[Req#Response]] = requests.map(req => Future(handleRequest(req)))
+    val responses: Future[Seq[Req#Response]] = Future.fold(asyncResponses)(Seq.empty[Req#Response])(_ :+ _)
 
     Await.result(responses, Duration.Inf)
   }
@@ -206,31 +200,39 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
     }
   }
 
-  private def exists [Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val result = new ExecuteWithResponseMetadata (() => tryExists(EtcdClient.absolutePath(prefix, key)))
-    val zkResult = new ZkExistsResponse(result.response)
-    ExistsResponse(zkResult.resultCode, key, ctx, null, result.responseMetadata).asInstanceOf[Req#Response]
+  private def exists[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
+    val (result, sendTime, receiveTime) = duration { tryExists(absolutePath(prefix, key)) }
+    val zkResult = new ZkExistsResponse(result)
+
+    ExistsResponse(zkResult.resultCode, key, ctx, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def getData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val result = new ExecuteWithResponseMetadata(() => tryGetData(EtcdClient.absolutePath(prefix, key)))
-    val zkResult = new ZkGetDataResponse(result.response)
-    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, null, result.responseMetadata).asInstanceOf[Req#Response]
+    val (result, sendTime, receiveTime) = duration { tryGetData(absolutePath(prefix, key)) }
+    val zkResult = new ZkGetDataResponse(result)
+
+    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def getChildrenData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
     val parent = if (key.endsWith("/")) key else s"$key/"
-    val result = new ExecuteWithResponseMetadata(() => tryGetData(
-      EtcdClient.absolutePath(prefix, parent),
-      GetOption.newBuilder().withKeysOnly(true).withPrefix(EtcdClient.absolutePath(prefix, parent)).build()))
-    val zkResult = new ZkGetChildrenResponse(result.response, parent)
-    GetChildrenResponse(zkResult.resultCode, key, ctx, zkResult.childrenKeys.toSeq, null, result.responseMetadata).asInstanceOf[Req#Response]
+    val (result, sendTime, receiveTime) = duration {
+      tryGetData(
+        absolutePath(prefix, parent),
+        GetOption.newBuilder()
+          .withKeysOnly(true)
+          .withPrefix(absolutePath(prefix, parent))
+          .build())
+    }
+    val zkResult = new ZkGetChildrenResponse(result, parent)
+
+    GetChildrenResponse(zkResult.resultCode, key, ctx, zkResult.childrenKeys.toSeq, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def delete[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val result = new ExecuteWithResponseMetadata(() => tryDelete(EtcdClient.absolutePath(prefix, key)))
-    val zkResult = new ZkDeleteResponse(result.response)
-    DeleteResponse(zkResult.resultCode, key, ctx, result.responseMetadata).asInstanceOf[Req#Response]
+    val (result, sendTime, receiveTime) = duration { tryDelete(absolutePath(prefix, key)) }
+    val zkResult = new ZkDeleteResponse(result)
+    DeleteResponse(zkResult.resultCode, key, ctx, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   //This method only sets data does not create it. This can be done differently
@@ -240,18 +242,21 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
                                             data: Array[Byte],
                                             ctx: Option[Any]): Req#Response = {
 
-    val result = new ExecuteWithResponseMetadata(() => trySetData(EtcdClient.absolutePath(prefix, key), data, ctx))
-    val zkResult = new ZkSetDataResponse(result.response)
-    SetDataResponse(zkResult.resultCode, key, ctx, null, result.responseMetadata).asInstanceOf[Req#Response]
+    val (result, sendTime, receiveTime) = duration { trySetData(absolutePath(prefix, key), data, ctx) }
+    val zkResult = new ZkSetDataResponse(result)
+
+    SetDataResponse(zkResult.resultCode, key, ctx, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def createWithLease[Req <: AsyncRequest](
                                                     key: String,
                                                     data: Array[Byte],
                                                     ctx: Option[Any]): Req#Response = {
-    val result = new ExecuteWithResponseMetadata(() => tryCreateWithLease(key, data, ctx))
-    val zkResult = new ZkCreateResponse(result.response)
-    CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
+
+    val (result, sendTime, receiveTime) = duration { tryCreateWithLease(absolutePath(prefix, key), data, ctx) }
+    val zkResult = new ZkCreateResponse(result)
+
+    CreateResponse(zkResult.resultCode, key, ctx, "", ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def create[Req <: AsyncRequest](key: String,
@@ -259,17 +264,19 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
                                           ctx: Option[Any],
                                           option: PutOption = PutOption.DEFAULT): Req#Response = {
 
-    val result = new ExecuteWithResponseMetadata(() => tryCreate(EtcdClient.absolutePath(prefix, key), data, ctx, option))
-    val zkResult = new ZkCreateResponse(result.response)
-    CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
+    val (result, sendTime, receiveTime) = duration { tryCreate(absolutePath(prefix, key), data, ctx, option) }
+    val zkResult = new ZkCreateResponse(result)
+
+    CreateResponse(zkResult.resultCode, key, ctx, "", ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def createSequential[Req <: AsyncRequest](key: String,
                                                     data: Array[Byte],
                                                     ctx: Option[Any]): Req#Response = {
-    val result = new ExecuteWithResponseMetadata(() => tryCreateSequential(EtcdClient.absolutePath(prefix, key), data))
-    val zkResult = new ZkCreateResponse(result.response)
-    CreateResponse(zkResult.resultCode, key, ctx, "", result.responseMetadata).asInstanceOf[Req#Response]
+    val (result, sendTime, receiveTime) = duration { tryCreateSequential(absolutePath(prefix, key), data) }
+    val zkResult = new ZkCreateResponse(result)
+
+    CreateResponse(zkResult.resultCode, key, ctx, "", ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def tryCreateWithLease[Req <: AsyncRequest](
@@ -282,7 +289,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
 
     // Create
     val txnResponse = tryCreate(
-      EtcdClient.absolutePath(key, prefix),
+      key,
       data,
       ctx,
       PutOption.newBuilder.withLeaseId(leaseId).build).get
@@ -301,13 +308,16 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
                                               data: Array[Byte],
                                               ctx: Option[Any],
                                               option: PutOption = PutOption.DEFAULT): Try[TxnResponse] = Try {
-    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.EQUAL, CmpTarget.version(0))).
-      Then(Op.put(key, data, option)).commit().get()
+
+    client.getKVClient.txn()
+      .If(new Cmp(key, Cmp.Op.EQUAL, CmpTarget.version(0)))
+      .Then(Op.put(key, data, option))
+      .commit().get()
   }
 
   // ETCD does not support SEQUENTIAL keys out of the box.
   // This implementation is based on https://github.com/coreos/etcd/blob/master/contrib/recipes/key.go
-  // TODO: we need to handle various error cases when <key> and __<key> get out of sync
+  // TODO: we need to handle various error cases when <key>nnnn and __<key> get out of sync
   private def tryCreateSequential[Req <: AsyncRequest](key: String,
                                                        data: Array[Byte]): Try[TxnResponse] = Try {
     // sequential keys are stored as <key>nnnnn
@@ -335,7 +345,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
         kv =>
           val key: String = kv.getKey
           key match {
-            case EtcdClient.SEQUENCEKEY_REGEX(_, seqNumber) => seqNumber.toInt + 1 // increment current seq number by 1
+            case SEQUENCEKEY_REGEX(_, seqNumber) => seqNumber.toInt + 1 // increment current seq number by 1
             case _ =>
               error(s"'$key' is not a sequence key !")
               throw new Exception(s"'$key' is not a sequence key !")
@@ -409,4 +419,12 @@ private[etcd] object EtcdClient {
   val SEQUENCEKEY_REGEX = """(.+)(\d+)$""".r
 
   def absolutePath(prefix: String, path: String): String = if (prefix != DEFAULT_PREFIX) s"$prefix$path" else path
+
+  def duration[R](body: => R)(implicit time: Time): (R, Long, Long) = {
+    val sendTimeMs: Long = time.hiResClockMs
+    val result: R = body
+    val receivedTimeMs:Long = time.hiResClockMs
+
+    (result, sendTimeMs, receivedTimeMs)
+  }
 }
