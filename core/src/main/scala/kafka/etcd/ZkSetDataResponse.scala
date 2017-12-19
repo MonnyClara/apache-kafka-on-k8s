@@ -17,13 +17,28 @@
 
 package kafka.etcd
 
+import com.coreos.jetcd.data.ByteSequence
 import com.coreos.jetcd.kv.TxnResponse
 import org.apache.zookeeper.KeeperException
+import org.apache.zookeeper.data.Stat
+import scala.collection.JavaConverters._
 
 import scala.util.Try
 
 class ZkSetDataResponse(response: Try[TxnResponse]) extends ZkResult(response){
   override def resultCode:KeeperException.Code = response.map{ resp =>
     if (resp.isSucceeded) KeeperException.Code.OK else KeeperException.Code.NONODE}.recover(onError).get
+
+  def stat: Option[Stat] = {
+    response.map{ resp =>
+      val data: Option[Long] = for {
+        resp <- resp.getGetResponses.asScala.headOption
+        kv <- resp.getKvs.asScala.headOption
+      } yield kv.getVersion
+      val newStat = new Stat()
+      newStat.setVersion(data.get.toInt)
+      return Option(newStat)
+    }.getOrElse(None)
+  }
 }
 
