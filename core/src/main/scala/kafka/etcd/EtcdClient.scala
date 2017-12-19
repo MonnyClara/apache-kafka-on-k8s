@@ -148,7 +148,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
           case _ => ???
         }
 
-      case SetDataRequest(path, data, _, ctx) => setData(path, data, ctx)
+      case SetDataRequest(path, data, version, ctx) => setData(path, data, version, ctx)
 
       case DeleteRequest(path, _, ctx) => delete(path, ctx)
 
@@ -211,7 +211,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
     val (result, sendTime, receiveTime) = duration { tryGetData(absolutePath(prefix, key)) }
     val zkResult = new ZkGetDataResponse(result)
 
-    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
+    GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, zkResult.stat.orNull, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def getChildrenData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
@@ -240,12 +240,13 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
   private def setData[Req <: AsyncRequest](
                                             key: String,
                                             data: Array[Byte],
+                                            version: Int,
                                             ctx: Option[Any]): Req#Response = {
 
-    val (result, sendTime, receiveTime) = duration { trySetData(absolutePath(prefix, key), data, ctx) }
+    val (result, sendTime, receiveTime) = duration { trySetData(absolutePath(prefix, key), data, version, ctx) }
     val zkResult = new ZkSetDataResponse(result)
 
-    SetDataResponse(zkResult.resultCode, key, ctx, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
+    SetDataResponse(zkResult.resultCode, key, ctx, zkResult.stat.orNull, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def createWithLease[Req <: AsyncRequest](
@@ -388,10 +389,14 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
   private def trySetData[Req <: AsyncRequest](
                                                key: String,
                                                data: Array[Byte],
+                                               version: Int,
                                                ctx: Option[Any],
                                                option: PutOption = PutOption.DEFAULT): Try[TxnResponse] = Try {
-    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0))).
-      Then(Op.put(key, data, option)).commit().get()
+    client.getKVClient.txn().
+      If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0)), new Cmp(key, Cmp.Op.LESS, CmpTarget.version(version))).
+      Then(Op.put(key, data, option), Op.get(key, GetOption.DEFAULT)).
+      Else(Op.get(key, GetOption.DEFAULT)).
+      commit().get()
   }
 
   private def tryDelete[Req <: AsyncRequest](
