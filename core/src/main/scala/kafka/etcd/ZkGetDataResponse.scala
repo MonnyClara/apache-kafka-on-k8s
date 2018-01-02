@@ -17,8 +17,10 @@
 
 package kafka.etcd
 
+import com.coreos.jetcd.data.ByteSequence
 import com.coreos.jetcd.kv.TxnResponse
 import org.apache.zookeeper.KeeperException
+import scala.collection.JavaConverters._
 
 import scala.util.Try
 
@@ -26,16 +28,19 @@ private[etcd] class ZkGetDataResponse(tryResponse: Try[TxnResponse]) extends ZkR
 
   override def resultCode: KeeperException.Code = tryResponse.map { resp =>
     if (resp.isSucceeded) {
-      Some(resp.getGetResponses.get(0).getKvs.get(0).getValue)
       KeeperException.Code.OK
     } else KeeperException.Code.NONODE
   }.recover(onError).get
 
-  // We need to think this through because I think this one does not works
   def data: Option[Array[Byte]] =
     tryResponse.map { resp =>
       if (resp.isSucceeded) {
-        Some(resp.getGetResponses.get(0).getKvs.get(0).getValue.getBytes)
+        val data: Option[ByteSequence] = for {
+          resp <- resp.getGetResponses.asScala.headOption
+          kv <- resp.getKvs.asScala.headOption
+        } yield kv.getValue
+
+        data.map(_.getBytes)
       }
       else None
     }.getOrElse(None)

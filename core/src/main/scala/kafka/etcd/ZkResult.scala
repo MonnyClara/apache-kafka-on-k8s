@@ -18,13 +18,16 @@
 package kafka.etcd
 
 import com.coreos.jetcd.exception.{ErrorCode, EtcdException}
+import kafka.utils.Logging
 import org.apache.zookeeper.KeeperException
 
-private[etcd] abstract class ZkResult[R](result: R) {
+private[etcd] abstract class ZkResult[R](result: R) extends Logging {
   protected val onError = PartialFunction[Throwable, KeeperException.Code] {
     case ex: EtcdException if ex.getErrorCode == ErrorCode.UNAVAILABLE  => KeeperException.Code.CONNECTIONLOSS
     case ex: EtcdException if ex.getErrorCode == ErrorCode.INVALID_ARGUMENT  => KeeperException.Code.BADARGUMENTS
-    case _:Error => KeeperException.Code.SYSTEMERROR
+    case ex: Error =>
+      error(ex.getMessage)
+      KeeperException.Code.SYSTEMERROR
   }
 
   def resultCode: KeeperException.Code
