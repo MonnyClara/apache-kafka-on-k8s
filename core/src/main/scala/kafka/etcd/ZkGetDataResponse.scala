@@ -43,7 +43,10 @@ private[etcd] class ZkGetDataResponse(tryResponse: Try[TxnResponse]) extends ZkR
           kv <- resp.getKvs.asScala.headOption
         } yield kv.getValue
 
-        data.map(_.getBytes)
+        val result = data.map(_.getBytes).get.map(_.toChar).mkString("")
+        if (result == "[null]")
+          None
+        else data.map(_.getBytes)
       }
       else None
     }.getOrElse(None)

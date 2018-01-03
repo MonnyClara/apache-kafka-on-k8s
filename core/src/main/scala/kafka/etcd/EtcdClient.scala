@@ -26,6 +26,7 @@ import kafka.utils.Logging
 import kafka.zookeeper._
 import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.CreateMode
+import org.apache.zookeeper.KeeperException.BadVersionException
 
 import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -34,7 +35,7 @@ import scala.concurrent.{Await, Future}
 import scala.util.Try
 import scala.collection.JavaConverters._
 
-class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) extends KafkaMetastore with Logging {
+class EtcdClient(connectionString: String = "127.0.0.1:2379", time: Time) extends KafkaMetastore with Logging {
 
   import Implicits._
   import EtcdClient._
@@ -89,6 +90,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
 
 
   override def registerZNodeChangeHandler(zNodeChangeHandler: ZNodeChangeHandler): Unit = {
+    info(s"Register change handler for path:${zNodeChangeHandler.path}")
     registerChangeHandler(zNodeChangeHandler.path,
       zNodeChangeHandler.handleCreation,
       zNodeChangeHandler.handleDataChange,
@@ -112,7 +114,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
   }
 
   override def unregisterZNodeChildChangeHandler(path: String): Unit = {
-    info(s"Register change handler for children of '$path'")
+    info(s"Unregister change handler for children of '$path'")
 
     childHandlers.unregisterChangeHandler(path)
   }
@@ -392,11 +394,20 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379/kafka", time: Time) 
                                                version: Int,
                                                ctx: Option[Any],
                                                option: PutOption = PutOption.DEFAULT): Try[TxnResponse] = Try {
-    client.getKVClient.txn().
-      If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0)), new Cmp(key, Cmp.Op.LESS, CmpTarget.version(version))).
+    val ifStatement = version match {
+      case -1 => client.getKVClient.txn().
+        If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0)))
+      case _ => client.getKVClient.txn().
+        If(new Cmp(key, Cmp.Op.EQUAL, CmpTarget.version(version)))
+    }
+    val response = ifStatement.
       Then(Op.put(key, data, option), Op.get(key, GetOption.DEFAULT)).
-      Else(Op.get(key, GetOption.DEFAULT)).
-      commit().get()
+      Else(Op.get(key, GetOption.DEFAULT)).commit().get()
+    if (version != -1 && !response.isSucceeded) {
+      if (response.getGetResponses.get(0).getKvs.get(0).getVersion > version)
+        throw new BadVersionException(key)
+    }
+    response
   }
 
   private def tryDelete[Req <: AsyncRequest](

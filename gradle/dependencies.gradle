@@ -74,7 +74,7 @@ versions += [
   zookeeper: "3.4.11",
   jfreechart: "1.0.0",
   mavenArtifact: "3.5.2",
-  jetcdcore: "0.0.1",
+  jetcdcore: "0.1.0-SNAPSHOT",
 ]
 
 libs += [
