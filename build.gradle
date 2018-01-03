@@ -38,6 +38,7 @@ allprojects {
 
   repositories {
     mavenCentral()
+    mavenLocal()
   }
   
   apply plugin: 'idea'

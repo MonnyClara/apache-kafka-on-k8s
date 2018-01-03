@@ -37,7 +37,7 @@ class ZkSetDataResponse(response: Try[TxnResponse]) extends ZkResult(response){
       } yield kv.getVersion
       val newStat = new Stat()
       newStat.setVersion(data.get.toInt)
-      return Option(newStat)
+      return Some(newStat)
     }.getOrElse(None)
   }
 }

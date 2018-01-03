@@ -16,20 +16,23 @@
 */
 package kafka.etcd
 
+import kafka.utils.Logging
+
 import scala.collection.JavaConverters._
 
 
-private[etcd] class ChangeHandlers {
+private[etcd] class ChangeHandlers extends Logging {
   type Handler = ()=> Unit
 
   private val handlersByKey = new java.util.concurrent.ConcurrentHashMap[String, Seq[Handler]].asScala
 
   def registerChangeHandler(key: String, handler: Handler): Unit = {
-
+    info(s"Entered registerChangeHandler for key:$key ")
     val handlers: Seq[Handler] = handlersByKey.get(key)
       .map(_ :+ handler)
       .getOrElse(Seq(handler))
     handlersByKey.put(key, handlers)
+    info("Exited registerChangeHandler")
   }
 
   def unregisterChangeHandler(key: String): Unit = {

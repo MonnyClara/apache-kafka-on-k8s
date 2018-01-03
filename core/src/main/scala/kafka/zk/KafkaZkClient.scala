@@ -1517,7 +1517,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
       val getDataRequest = GetDataRequest(path)
       val getDataResponse = retryRequestUntilConnected(getDataRequest)
       getDataResponse.resultCode match {
-        case Code.OK if getDataResponse.stat.getEphemeralOwner != kafkaMetastore.find(_.isInstanceOf[ZooKeeperClient]).get.sessionId =>
+        case Code.OK if getDataResponse.stat.getEphemeralOwner != kafkaMetastore.head.sessionId =>
           error(s"Error while creating ephemeral at $path, node already exists and owner " +
             s"'${getDataResponse.stat.getEphemeralOwner}' " +
             s"does not match current session '${kafkaMetastore.find(_.isInstanceOf[ZooKeeperClient]).get.sessionId}'")
