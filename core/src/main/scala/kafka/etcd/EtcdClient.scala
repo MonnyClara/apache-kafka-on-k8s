@@ -16,7 +16,7 @@
 */
 package kafka.etcd
 
-import com.coreos.jetcd.Client
+import com.coreos.jetcd.{Client, Txn}
 import com.coreos.jetcd.kv.TxnResponse
 import com.coreos.jetcd.op.{Cmp, CmpTarget, Op}
 import com.coreos.jetcd.options.{DeleteOption, GetOption, PutOption}
@@ -210,23 +210,27 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379", time: Time) extend
   }
 
   private def getData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val (result, sendTime, receiveTime) = duration { tryGetData(absolutePath(prefix, key)) }
+    val keyAbsolutePath = absolutePath(prefix, key)
+    val (result, sendTime, receiveTime) = duration { tryGetData(keyAbsolutePath, keyAbsolutePath) }
     val zkResult = new ZkGetDataResponse(result)
 
     GetDataResponse(zkResult.resultCode, key, ctx, zkResult.data.orNull, zkResult.stat.orNull, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
 
   private def getChildrenData[Req <: AsyncRequest](key: String, ctx: Option[Any]): Req#Response = {
-    val parent = if (key.endsWith("/")) key else s"$key/"
+    val parent = if (key.endsWith("/")) key.substring(0, key.length-2) else key
+    val parentAbsolutePath = absolutePath(prefix, parent)
+
     val (result, sendTime, receiveTime) = duration {
       tryGetData(
-        absolutePath(prefix, parent),
+        s"$parentAbsolutePath/",
+        parentAbsolutePath,
         GetOption.newBuilder()
           .withKeysOnly(true)
-          .withPrefix(absolutePath(prefix, parent))
+          .withPrefix(s"$parentAbsolutePath/")
           .build())
     }
-    val zkResult = new ZkGetChildrenResponse(result, parent)
+    val zkResult = new ZkGetChildrenResponse(result, s"$parentAbsolutePath/")
 
     GetChildrenResponse(zkResult.resultCode, key, ctx, zkResult.childrenKeys.toSeq, null, ResponseMetadata(sendTime, receiveTime)).asInstanceOf[Req#Response]
   }
@@ -422,10 +426,12 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379", time: Time) extend
     response.isSucceeded
   }
 
+
   private def tryGetData[Req <: AsyncRequest](
                                                key: String,
+                                               applyConditionOnKey: String,
                                                option: GetOption = GetOption.DEFAULT): Try[TxnResponse] = Try {
-    client.getKVClient.txn().If(new Cmp(key, Cmp.Op.GREATER, CmpTarget.version(0))).
+    client.getKVClient.txn().If(new Cmp(applyConditionOnKey, Cmp.Op.GREATER, CmpTarget.version(0))).
       Then(Op.get(key, option)).commit().get()
   }
 }
