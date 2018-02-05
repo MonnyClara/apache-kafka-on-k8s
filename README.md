@@ -1,5 +1,17 @@
+Apache Kafka on Kubernetes
+=================
+
+This repository is a fork of [Apache Kafka](https://github.com/apache/kafka) and contains work towards running Kafka the `cloud native` way on Kubernetes. 
+
+The `Zookeeper` dependency is removed and all operations are dispatched to an `etcd` cluster, using the [jetcd](https://github.com/coreos/jetcd) library. 
+
+Special thanks for the [Apache Kafka](https://kafka.apache.org) community and [CoreOS](https://kafka.apache.org) opensourcing the jetcd library.
+
+>Note: we use a `jetcd` build from master due to a [Tx bug](https://banzaicloud.com/blog/jetcd_bug/) fixed but not released yet
+
 Apache Kafka
 =================
+
 See our [web site](http://kafka.apache.org) for details on the project.
 
 You need to have [Gradle](http://www.gradle.org/installation) and [Java](http://www.oracle.com/technetwork/java/javase/downloads/index.html) installed.
