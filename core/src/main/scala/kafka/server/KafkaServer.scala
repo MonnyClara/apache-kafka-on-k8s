@@ -198,8 +198,8 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
       if (canStartup) {
         brokerState.newState(Starting)
 
-        /* setup zookeeper */
-        initZkClient(time)
+        /* setup metastore */
+        initMetaStoreClient(time)
 
         /* Get or create cluster_id */
         _clusterId = getOrGenerateClusterId(zkClient)
@@ -338,16 +338,38 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
     new ReplicaManager(config, metrics, time, zkClient, kafkaScheduler, logManager, isShuttingDown, quotaManagers,
       brokerTopicStats, metadataCache, logDirFailureChannel)
 
-  private def initZkClient(time: Time): Unit = {
-    info(s"Connecting to zookeeper on ${config.zkConnect}")
+  private def initMetaStoreClient(time: Time): Unit = {
+    val etcdPrefix = "etcd://"
+    val zkPrefix = "zk://"
+    config.MetaStoreConnect match {
+      case connectionString if connectionString.startsWith(etcdPrefix) =>
+        initEtcdClient(config.MetaStoreConnect.substring(etcdPrefix.length), time)
+      case connectionString if connectionString.startsWith(zkPrefix) =>
+        initZkClient(config.MetaStoreConnect.substring(zkPrefix.length),time)
+      case _ =>
+        initZkClient(config.MetaStoreConnect,time)
+    }
+    }
+  private def initEtcdClient(etcdConnect: String, time: Time): Unit = {
+    info(s"Connecting to etcd on ${etcdConnect}")
+
+    def createEtcdClient(etcdConnect: String) = KafkaZkClient(etcdConnect, time)
+
+    // This one needs refactor because obviously this one is not a zkClient so ambiguous naming
+    _zkClient = createEtcdClient(etcdConnect)
+    _zkClient.createTopLevelPaths()
+  }
+
+  private def initZkClient(zkConnect: String, time: Time): Unit = {
+    info(s"Connecting to zookeeper on ${zkConnect}")
 
     def createZkClient(zkConnect: String, isSecure: Boolean) =
       KafkaZkClient(zkConnect, isSecure, config.zkSessionTimeoutMs, config.zkConnectionTimeoutMs,
         config.zkMaxInFlightRequests, time)
 
-    val chrootIndex = config.zkConnect.indexOf("/")
+    val chrootIndex = zkConnect.indexOf("/")
     val chrootOption = {
-      if (chrootIndex > 0) Some(config.zkConnect.substring(chrootIndex))
+      if (chrootIndex > 0) Some(zkConnect.substring(chrootIndex))
       else None
     }
 
@@ -359,14 +381,14 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
 
     // make sure chroot path exists
     chrootOption.foreach { chroot =>
-      val zkConnForChrootCreation = config.zkConnect.substring(0, chrootIndex)
+      val zkConnForChrootCreation = zkConnect.substring(0, chrootIndex)
       val zkClient = createZkClient(zkConnForChrootCreation, secureAclsEnabled)
       zkClient.makeSurePersistentPathExists(chroot)
       info(s"Created zookeeper path $chroot")
       zkClient.close()
     }
 
-    _zkClient = createZkClient(config.zkConnect, secureAclsEnabled)
+    _zkClient = createZkClient(zkConnect, secureAclsEnabled)
     _zkClient.createTopLevelPaths()
   }
 

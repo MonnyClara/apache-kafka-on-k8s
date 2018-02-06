@@ -84,7 +84,7 @@ class DynamicBrokerConfigTest {
 
     val securityPropsWithoutListenerPrefix = Map(SslConfigs.SSL_KEYSTORE_TYPE_CONFIG -> "PKCS12")
     verifyConfigUpdateWithInvalidConfig(config, origProps, validProps, securityPropsWithoutListenerPrefix)
-    val nonDynamicProps = Map(KafkaConfig.ZkConnectProp -> "somehost:2181")
+    val nonDynamicProps = Map(KafkaConfig.MetaStoreConnectProp -> "somehost:2181")
     verifyConfigUpdateWithInvalidConfig(config, origProps, validProps, nonDynamicProps)
 
     // Test update of configs with invalid type

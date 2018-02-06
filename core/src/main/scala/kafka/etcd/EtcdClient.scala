@@ -16,7 +16,7 @@
 */
 package kafka.etcd
 
-import com.coreos.jetcd.{Client, Txn}
+import com.coreos.jetcd.Client
 import com.coreos.jetcd.kv.TxnResponse
 import com.coreos.jetcd.op.{Cmp, CmpTarget, Op}
 import com.coreos.jetcd.options.{DeleteOption, GetOption, PutOption}
@@ -35,7 +35,7 @@ import scala.concurrent.{Await, Future}
 import scala.util.Try
 import scala.collection.JavaConverters._
 
-class EtcdClient(connectionString: String = "127.0.0.1:2379", time: Time) extends KafkaMetastore with Logging {
+class EtcdClient(connectionString: String, time: Time) extends KafkaMetastore with Logging {
 
   import Implicits._
   import EtcdClient._
@@ -46,7 +46,7 @@ class EtcdClient(connectionString: String = "127.0.0.1:2379", time: Time) extend
   private val connectionStringWithoutPrefix = connStringParts.head
   private val prefix = connStringParts.tail.mkString("/", "/", "")
 
-  private val client: Client = Client.builder.endpoints(connectionStringWithoutPrefix).build()
+  private val client: Client = Client.builder.endpoints(s"http://$connectionStringWithoutPrefix").build()
 
   // Event handlers to handler events received from ETCD
   private val createHandlers = new ChangeHandlers
