@@ -16,10 +16,16 @@
   */
 package kafka.etcd
 
+import java.nio.charset.StandardCharsets
+
 import com.coreos.jetcd.data.ByteSequence
 
 private[etcd] object Implicits {
-  implicit def bytes2ByteSequence(b: Array[Byte]): ByteSequence = ByteSequence.fromBytes(b)
+  //This "[null]" value needs to be set for etcd because, zk can handle empty value for a node but etcd can't
+  implicit def bytes2ByteSequence(b: Array[Byte]): ByteSequence = {
+    val etcdData = Option(b).getOrElse("[null]".getBytes(StandardCharsets.UTF_8))
+    ByteSequence.fromBytes(etcdData)
+  }
   implicit def byteSequence2StringUtf8(bs: ByteSequence): String = bs.toStringUtf8
   implicit def string2ByteSequence(s: String): ByteSequence = ByteSequence.fromString(s)
   implicit def byteSequence2Bytes(bs: ByteSequence): Array[Byte] = bs.getBytes

@@ -241,8 +241,9 @@ object KafkaConfig {
     System.out.println(configDef.toHtmlTable(DynamicBrokerConfig.dynamicConfigUpdateModes))
   }
 
+  /** ********* MetaStire Configuration ***********/
+  val MetaStoreConnectProp = "metastore.connect"
   /** ********* Zookeeper Configuration ***********/
-  val ZkConnectProp = "zookeeper.connect"
   val ZkSessionTimeoutMsProp = "zookeeper.session.timeout.ms"
   val ZkConnectionTimeoutMsProp = "zookeeper.connection.timeout.ms"
   val ZkSyncTimeMsProp = "zookeeper.sync.time.ms"
@@ -447,8 +448,11 @@ object KafkaConfig {
   val PasswordEncoderIterationsProp =  "password.encoder.iterations"
 
   /* Documentation */
+  /** ********* MetaStore Configuration ***********/
+  val MetaStoreConnectDoc = "No connection string to metastore was specified. " +
+    "For using ETCD as megastore the connection string must start with \"etcd://\". " +
+    "If connection string does not specify the type of the metastore or \"zk://\" than ZooKeeper will be used as metastore."
   /** ********* Zookeeper Configuration ***********/
-  val ZkConnectDoc = "Zookeeper host string"
   val ZkSessionTimeoutMsDoc = "Zookeeper session timeout"
   val ZkConnectionTimeoutMsDoc = "The max time that the client waits to establish a connection to zookeeper. If not set, the value in " + ZkSessionTimeoutMsProp + " is used"
   val ZkSyncTimeMsDoc = "How far a ZK follower can be behind a ZK leader"
@@ -747,8 +751,9 @@ object KafkaConfig {
 
     new ConfigDef()
 
+      /** ********* MetaStore Configuration ***********/
+      .define(MetaStoreConnectProp, STRING, HIGH, MetaStoreConnectDoc)
       /** ********* Zookeeper Configuration ***********/
-      .define(ZkConnectProp, STRING, HIGH, ZkConnectDoc)
       .define(ZkSessionTimeoutMsProp, INT, Defaults.ZkSessionTimeoutMs, HIGH, ZkSessionTimeoutMsDoc)
       .define(ZkConnectionTimeoutMsProp, INT, null, HIGH, ZkConnectionTimeoutMsDoc)
       .define(ZkSyncTimeMsProp, INT, Defaults.ZkSyncTimeMs, LOW, ZkSyncTimeMsDoc)
@@ -1014,8 +1019,9 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   private[server] def valuesFromThisConfigWithPrefixOverride(prefix: String): util.Map[String, AnyRef] =
     super.valuesWithPrefixOverride(prefix)
 
+  /** ********* MetaStore Configuration ***********/
+  val MetaStoreConnect: String = getString(KafkaConfig.MetaStoreConnectProp)
   /** ********* Zookeeper Configuration ***********/
-  val zkConnect: String = getString(KafkaConfig.ZkConnectProp)
   val zkSessionTimeoutMs: Int = getInt(KafkaConfig.ZkSessionTimeoutMsProp)
   val zkConnectionTimeoutMs: Int =
     Option(getInt(KafkaConfig.ZkConnectionTimeoutMsProp)).map(_.toInt).getOrElse(getInt(KafkaConfig.ZkSessionTimeoutMsProp))

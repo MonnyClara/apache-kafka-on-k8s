@@ -41,7 +41,6 @@ import org.apache.zookeeper.{CreateMode, KeeperException, ZooKeeper}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{Seq, mutable}
-import scala.collection.JavaConverters._
 
 /**
  * Provides higher level Kafka-specific operations on top of the pipelined [[kafka.zookeeper.ZooKeeperClient]].
@@ -53,12 +52,8 @@ import scala.collection.JavaConverters._
  * easier to quickly migrate away from `ZkUtils`. We should revisit this once the migration is completed and tests are
  * in place. We should also consider whether a monolithic [[kafka.zk.ZkData]] is the way to go.
  */
-class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean, time: Time) extends AutoCloseable with
+class KafkaZkClient(kafkaMetastore: KafkaMetastore, isSecure: Boolean, time: Time) extends AutoCloseable with
   Logging with KafkaMetricsGroup {
-
-  def this(kafkaMetastore: java.util.List[_<: KafkaMetastore], isSecure: Boolean, time: Time) {
-    this(kafkaMetastore.asScala.toList, isSecure, time)
-  }
 
   override def metricName(name: String, metricTags: scala.collection.Map[String, String]): MetricName = {
     explicitMetricName("kafka.server", "ZooKeeperClientMetrics", name, metricTags)
@@ -1197,7 +1192,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @throws KeeperException if an error is returned by ZooKeeper
    */
   def registerZNodeChangeHandlerAndCheckExistence(zNodeChangeHandler: ZNodeChangeHandler): Boolean = {
-    kafkaMetastore.foreach(_.registerZNodeChangeHandler(zNodeChangeHandler))
+    kafkaMetastore.registerZNodeChangeHandler(zNodeChangeHandler)
     val existsResponse = retryRequestUntilConnected(ExistsRequest(zNodeChangeHandler.path))
     existsResponse.resultCode match {
       case Code.OK => true
@@ -1211,7 +1206,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @param zNodeChangeHandler
    */
   def registerZNodeChangeHandler(zNodeChangeHandler: ZNodeChangeHandler): Unit = {
-    kafkaMetastore.foreach(_.registerZNodeChangeHandler(zNodeChangeHandler))
+    kafkaMetastore.registerZNodeChangeHandler(zNodeChangeHandler)
   }
 
   /**
@@ -1219,7 +1214,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @param path
    */
   def unregisterZNodeChangeHandler(path: String): Unit = {
-    kafkaMetastore.foreach(_.unregisterZNodeChangeHandler(path))
+    kafkaMetastore.unregisterZNodeChangeHandler(path)
   }
 
   /**
@@ -1227,7 +1222,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @param zNodeChildChangeHandler
    */
   def registerZNodeChildChangeHandler(zNodeChildChangeHandler: ZNodeChildChangeHandler): Unit = {
-    kafkaMetastore.foreach(_.registerZNodeChildChangeHandler(zNodeChildChangeHandler))
+    kafkaMetastore.registerZNodeChildChangeHandler(zNodeChildChangeHandler)
   }
 
   /**
@@ -1235,7 +1230,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @param path
    */
   def unregisterZNodeChildChangeHandler(path: String): Unit = {
-    kafkaMetastore.foreach(_.unregisterZNodeChildChangeHandler(path))
+    kafkaMetastore.unregisterZNodeChildChangeHandler(path)
   }
 
   /**
@@ -1243,7 +1238,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @param stateChangeHandler
    */
   def registerStateChangeHandler(stateChangeHandler: StateChangeHandler): Unit = {
-    kafkaMetastore.foreach(_.registerStateChangeHandler(stateChangeHandler))
+    kafkaMetastore.registerStateChangeHandler(stateChangeHandler)
   }
 
   /**
@@ -1251,7 +1246,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    * @param name
    */
   def unregisterStateChangeHandler(name: String): Unit = {
-    kafkaMetastore.foreach(_.unregisterStateChangeHandler(name))
+    kafkaMetastore.unregisterStateChangeHandler(name)
   }
 
   /**
@@ -1259,7 +1254,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
    */
   def close(): Unit = {
     removeMetric("ZooKeeperRequestLatencyMs")
-    kafkaMetastore.foreach(_.close())
+    kafkaMetastore.close()
   }
 
   /**
@@ -1405,7 +1400,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
     }
 
     def createRecursive0(path: String): Unit = {
-      val createRequest = CreateRequest(path, "[null]".getBytes(), acls(path), CreateMode.PERSISTENT)
+      val createRequest = CreateRequest(path, data = null, acls(path), CreateMode.PERSISTENT)
       var createResponse = retryRequestUntilConnected(createRequest)
       if (createResponse.resultCode == Code.NONODE) {
         createRecursive0(parentPath(path))
@@ -1436,7 +1431,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
   private def createTopicPartition(partitions: Seq[TopicPartition]): Seq[CreateResponse] = {
     val createRequests = partitions.map { partition =>
       val path = TopicPartitionZNode.path(partition)
-      CreateRequest(path, "[null]".getBytes, acls(path), CreateMode.PERSISTENT, Some(partition))
+      CreateRequest(path, data = null, acls(path), CreateMode.PERSISTENT, Some(partition))
     }
     retryRequestsUntilConnected(createRequests)
   }
@@ -1444,7 +1439,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
   private def createTopicPartitions(topics: Seq[String]): Seq[CreateResponse] = {
     val createRequests = topics.map { topic =>
       val path = TopicPartitionsZNode.path(topic)
-      CreateRequest(path, "[null]".getBytes, acls(path), CreateMode.PERSISTENT, Some(topic))
+      CreateRequest(path, data = null, acls(path), CreateMode.PERSISTENT, Some(topic))
     }
     retryRequestsUntilConnected(createRequests)
   }
@@ -1466,7 +1461,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
     val remainingRequests = ArrayBuffer(requests: _*)
     val responses = new ArrayBuffer[Req#Response]
     while (remainingRequests.nonEmpty) {
-      val batchResponses = kafkaMetastore.flatMap(_.handleRequests(remainingRequests))
+      val batchResponses = kafkaMetastore.handleRequests(remainingRequests)
 
       batchResponses.foreach(response => latencyMetric.update(response.metadata.responseTimeMs))
 
@@ -1483,7 +1478,7 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
         }
 
         if (remainingRequests.nonEmpty)
-          kafkaMetastore.foreach(_.waitUntilConnected())
+          kafkaMetastore.waitUntilConnected()
       } else {
         remainingRequests.clear()
         responses ++= batchResponses
@@ -1518,10 +1513,10 @@ class KafkaZkClient(kafkaMetastore: List[_<: KafkaMetastore], isSecure: Boolean,
       val getDataRequest = GetDataRequest(path)
       val getDataResponse = retryRequestUntilConnected(getDataRequest)
       getDataResponse.resultCode match {
-        case Code.OK if getDataResponse.stat.getEphemeralOwner != kafkaMetastore.head.sessionId =>
+        case Code.OK if getDataResponse.stat.getEphemeralOwner != kafkaMetastore.sessionId =>
           error(s"Error while creating ephemeral at $path, node already exists and owner " +
             s"'${getDataResponse.stat.getEphemeralOwner}' " +
-            s"does not match current session '${kafkaMetastore.find(_.isInstanceOf[ZooKeeperClient]).get.sessionId}'")
+            s"does not match current session '${kafkaMetastore.sessionId}'")
           Code.NODEEXISTS
         case code@ Code.OK => code
         case Code.NONODE =>
@@ -1561,9 +1556,12 @@ object KafkaZkClient {
             time: Time,
             metricGroup: String = "kafka.server",
             metricType: String = "SessionExpireListener") = {
-//    val zooKeeperClient = new ZooKeeperClient(connectString, sessionTimeoutMs, connectionTimeoutMs, maxInFlightRequests,
-//      time, metricGroup, metricType)
-    val etcdClient = new EtcdClient(time = time)
-    new KafkaZkClient(etcdClient :: Nil, isSecure, time)
+    val zooKeeperClient = new ZooKeeperClient(connectString, sessionTimeoutMs, connectionTimeoutMs, maxInFlightRequests,
+      time, metricGroup, metricType)
+    new KafkaZkClient(zooKeeperClient, isSecure, time)
+  }
+  def apply(connectionString: String, time: Time) = {
+    val etcdClient = new EtcdClient(connectionString, time)
+    new KafkaZkClient(etcdClient, false, time)
   }
 }

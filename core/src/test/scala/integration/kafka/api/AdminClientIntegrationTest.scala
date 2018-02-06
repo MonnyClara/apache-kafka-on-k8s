@@ -1024,7 +1024,7 @@ object AdminClientIntegrationTest {
     var topicConfigEntries2 = Seq(new ConfigEntry(LogConfig.CompressionTypeProp, "snappy")).asJava
 
     val brokerResource = new ConfigResource(ConfigResource.Type.BROKER, servers.head.config.brokerId.toString)
-    val brokerConfigEntries = Seq(new ConfigEntry(KafkaConfig.ZkConnectProp, "localhost:2181")).asJava
+    val brokerConfigEntries = Seq(new ConfigEntry(KafkaConfig.MetaStoreConnectProp, "localhost:2181")).asJava
 
     // Alter configs: first and third are invalid, second is valid
     var alterResult = client.alterConfigs(Map(

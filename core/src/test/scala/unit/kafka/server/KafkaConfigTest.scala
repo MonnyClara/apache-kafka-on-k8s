@@ -213,7 +213,7 @@ class KafkaConfigTest {
   def testDuplicateListeners() {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     // listeners with duplicate port
     props.put(KafkaConfig.ListenersProp, "PLAINTEXT://localhost:9091,TRACE://localhost:9091")
@@ -232,7 +232,7 @@ class KafkaConfigTest {
   def testBadListenerProtocol() {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
     props.put(KafkaConfig.ListenersProp, "BAD://localhost:9091")
 
     assertFalse(isValidKafkaConfig(props))
@@ -242,7 +242,7 @@ class KafkaConfigTest {
   def testListenerNamesWithAdvertisedListenerUnset(): Unit = {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     props.put(KafkaConfig.ListenersProp, "CLIENT://localhost:9091,REPLICATION://localhost:9092,INTERNAL://localhost:9093")
     props.put(KafkaConfig.ListenerSecurityProtocolMapProp, "CLIENT:SSL,REPLICATION:SSL,INTERNAL:PLAINTEXT")
@@ -266,7 +266,7 @@ class KafkaConfigTest {
   def testListenerAndAdvertisedListenerNames(): Unit = {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     props.put(KafkaConfig.ListenersProp, "EXTERNAL://localhost:9091,INTERNAL://localhost:9093")
     props.put(KafkaConfig.AdvertisedListenersProp, "EXTERNAL://lb1.example.com:9000,INTERNAL://host1:9093")
@@ -297,7 +297,7 @@ class KafkaConfigTest {
   def testListenerNameMissingFromListenerSecurityProtocolMap(): Unit = {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     props.put(KafkaConfig.ListenersProp, "SSL://localhost:9091,REPLICATION://localhost:9092")
     props.put(KafkaConfig.InterBrokerListenerNameProp, "SSL")
@@ -308,7 +308,7 @@ class KafkaConfigTest {
   def testInterBrokerListenerNameMissingFromListenerSecurityProtocolMap(): Unit = {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     props.put(KafkaConfig.ListenersProp, "SSL://localhost:9091")
     props.put(KafkaConfig.InterBrokerListenerNameProp, "REPLICATION")
@@ -319,7 +319,7 @@ class KafkaConfigTest {
   def testInterBrokerListenerNameAndSecurityProtocolSet(): Unit = {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     props.put(KafkaConfig.ListenersProp, "SSL://localhost:9091")
     props.put(KafkaConfig.InterBrokerListenerNameProp, "SSL")
@@ -331,7 +331,7 @@ class KafkaConfigTest {
   def testCaseInsensitiveListenerProtocol() {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
     props.put(KafkaConfig.ListenersProp, "plaintext://localhost:9091,SsL://localhost:9092")
     val config = KafkaConfig.fromProps(props)
     assertEquals(Some("SSL://localhost:9092"), config.listeners.find(_.listenerName.value == "SSL").map(_.connectionString))
@@ -346,7 +346,7 @@ class KafkaConfigTest {
   def testListenerDefaults() {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
 
     // configuration with host and port, but no listeners
     props.put(KafkaConfig.HostNameProp, "myhost")
@@ -375,7 +375,7 @@ class KafkaConfigTest {
   def testVersionConfiguration() {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
-    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "localhost:2181")
     val conf = KafkaConfig.fromProps(props)
     assertEquals(ApiVersion.latestVersion, conf.interBrokerProtocolVersion)
 
@@ -550,7 +550,7 @@ class KafkaConfigTest {
   def testFromPropsInvalid() {
     def getBaseProperties(): Properties = {
       val validRequiredProperties = new Properties()
-      validRequiredProperties.put(KafkaConfig.ZkConnectProp, "127.0.0.1:2181")
+      validRequiredProperties.put(KafkaConfig.MetaStoreConnectProp, "127.0.0.1:2181")
       validRequiredProperties
     }
     // to ensure a basis is valid - bootstraps all needed validation
@@ -558,7 +558,7 @@ class KafkaConfigTest {
 
     KafkaConfig.configNames().foreach(name => {
       name match {
-        case KafkaConfig.ZkConnectProp => // ignore string
+        case KafkaConfig.MetaStoreConnectProp => // ignore string
         case KafkaConfig.ZkSessionTimeoutMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.ZkConnectionTimeoutMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.ZkSyncTimeMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
@@ -722,7 +722,7 @@ class KafkaConfigTest {
   @Test
   def testSpecificProperties(): Unit = {
     val defaults = new Properties()
-    defaults.put(KafkaConfig.ZkConnectProp, "127.0.0.1:2181")
+    defaults.put(KafkaConfig.MetaStoreConnectProp, "127.0.0.1:2181")
     // For ZkConnectionTimeoutMs
     defaults.put(KafkaConfig.ZkSessionTimeoutMsProp, "1234")
     defaults.put(KafkaConfig.BrokerIdGenerationEnableProp, "false")
@@ -742,7 +742,7 @@ class KafkaConfigTest {
     defaults.put(KafkaConfig.MetricRecordingLevelProp, Sensor.RecordingLevel.DEBUG.toString)
 
     val config = KafkaConfig.fromProps(defaults)
-    assertEquals("127.0.0.1:2181", config.zkConnect)
+    assertEquals("127.0.0.1:2181", config.MetaStoreConnect)
     assertEquals(1234, config.zkConnectionTimeoutMs)
     assertEquals(false, config.brokerIdGenerationEnable)
     assertEquals(1, config.maxReservedBrokerId)
@@ -771,7 +771,7 @@ class KafkaConfigTest {
   @Test
   def testNonroutableAdvertisedListeners() {
     val props = new Properties()
-    props.put(KafkaConfig.ZkConnectProp, "127.0.0.1:2181")
+    props.put(KafkaConfig.MetaStoreConnectProp, "127.0.0.1:2181")
     props.put(KafkaConfig.ListenersProp, "PLAINTEXT://0.0.0.0:9092")
     assertFalse(isValidKafkaConfig(props))
   }

@@ -245,7 +245,7 @@ object TestUtils extends Logging {
     } else {
       props.put(KafkaConfig.LogDirProp, TestUtils.tempDir().getAbsolutePath)
     }
-    props.put(KafkaConfig.ZkConnectProp, zkConnect)
+    props.put(KafkaConfig.MetaStoreConnectProp, zkConnect)
     props.put(KafkaConfig.ZkConnectionTimeoutMsProp, "10000")
     props.put(KafkaConfig.ReplicaSocketTimeoutMsProp, "1500")
     props.put(KafkaConfig.ControllerSocketTimeoutMsProp, "1500")
