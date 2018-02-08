@@ -54,8 +54,15 @@ object TopicCommand extends Logging {
     opts.checkArgs()
 
     val time = Time.SYSTEM
-    val zkClient = KafkaZkClient(opts.options.valueOf(opts.zkConnectOpt), JaasUtils.isZkSecurityEnabled, 30000, 30000,
-      Int.MaxValue, time)
+    val etcdPrefix = "etcd://"
+    val zkPrefix = "zk://"
+    val zkClient = opts.options.valueOf(opts.zkConnectOpt) match {
+      case connectionString if connectionString.startsWith(etcdPrefix) =>
+        KafkaZkClient(connectionString.substring(etcdPrefix.length),time)
+      case connectionString  =>
+        KafkaZkClient(connectionString.replace(zkPrefix,""), JaasUtils.isZkSecurityEnabled, 30000, 30000,
+        Int.MaxValue, time)
+    }
 
     var exitCode = 0
     try {
