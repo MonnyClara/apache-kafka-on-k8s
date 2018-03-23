@@ -17,7 +17,7 @@
 
 package kafka.etcd
 
-import com.coreos.jetcd.exception.{ErrorCode, EtcdException}
+import com.coreos.jetcd.common.exception.{ErrorCode, EtcdException}
 import kafka.utils.Logging
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.KeeperException.BadVersionException
