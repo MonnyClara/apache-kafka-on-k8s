@@ -37,6 +37,7 @@ import kafka.network.{Processor, RequestChannel}
 import kafka.utils._
 import kafka.utils.Implicits._
 import kafka.zk.{ConfigEntityChangeNotificationZNode, ZooKeeperTestHarness}
+import kafka.zookeeper.ZooKeeperClient
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.ConfigEntry.{ConfigSource, ConfigSynonym}
 import org.apache.kafka.clients.admin._
@@ -614,7 +615,8 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     // Trigger session expiry and ensure that controller registers new advertised listener after expiry
     val controllerEpoch = zkClient.getControllerEpoch
     val controllerServer = servers(zkClient.getControllerId.getOrElse(throw new IllegalStateException("No controller")))
-    val controllerZkClient = controllerServer.zkClient
+    val controllerZkClient = controllerServer.zkClient.asInstanceOf[ZooKeeperClient]
+
     val sessionExpiringClient = createZooKeeperClientToTriggerSessionExpiry(controllerZkClient.currentZooKeeper)
     sessionExpiringClient.close()
     TestUtils.waitUntilTrue(() => zkClient.getControllerEpoch != controllerEpoch,

@@ -37,7 +37,7 @@ import org.apache.kafka.common.security.token.delegation.{DelegationToken, Token
 import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.KeeperException.{Code, NodeExistsException}
 import org.apache.zookeeper.data.{ACL, Stat}
-import org.apache.zookeeper.{CreateMode, KeeperException, ZooKeeper}
+import org.apache.zookeeper.{CreateMode, KeeperException}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{Seq, mutable}
@@ -64,7 +64,7 @@ class KafkaZkClient(kafkaMetastore: KafkaMetastore, isSecure: Boolean, time: Tim
   import KafkaZkClient._
 
   // Only for testing
-  private[kafka] def currentZooKeeper: ZooKeeper = zooKeeperClient.currentZooKeeper
+  private[kafka] def currentKafkaMetaStore: KafkaMetastore = kafkaMetastore
 
   /**
    * Create a sequential persistent path. That is, the znode will not be automatically deleted upon client's disconnect
