@@ -7,8 +7,6 @@ The `Zookeeper` dependency is removed and all operations are dispatched to an `e
 
 Special thanks for the [Apache Kafka](https://kafka.apache.org) community and [CoreOS](https://kafka.apache.org) opensourcing the jetcd library.
 
->Note: we use a `jetcd` build from master due to a [Tx bug](https://banzaicloud.com/blog/jetcd_bug/) fixed but not released yet
-
 Apache Kafka
 =================
 
